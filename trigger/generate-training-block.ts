@@ -690,7 +690,8 @@ Return valid JSON matching the schema provided.`
         .findMany({
           where: {
             userId,
-            externalId: { in: createdExternalIds }
+            externalId: { in: createdExternalIds },
+            type: { not: 'Rest' }
           },
           select: {
             id: true,

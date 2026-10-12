@@ -162,7 +162,10 @@ describe('training block Intervals auto-upload (CW-751)', () => {
       if (where.id) return [anchor]
       expect(inTransaction).toBe(false)
       return committed.filter(
-        (row) => row.userId === where.userId && where.externalId.in.includes(row.externalId)
+        (row) =>
+          row.userId === where.userId &&
+          where.externalId.in.includes(row.externalId) &&
+          (where.type?.not !== 'Rest' || row.type !== 'Rest')
       )
     })
     mocks.prisma.$transaction.mockImplementation(async (callback) => {
@@ -198,7 +201,9 @@ describe('training block Intervals auto-upload (CW-751)', () => {
       data.map((row: Workout) => row.externalId)
     )
     expect(mocks.prisma.plannedWorkout.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { userId: 'user-1', externalId: { in: externalIds } } })
+      expect.objectContaining({
+        where: expect.objectContaining({ userId: 'user-1', externalId: { in: externalIds } })
+      })
     )
     expect(mocks.structure).not.toHaveBeenCalled()
   })
@@ -236,7 +241,7 @@ describe('training block Intervals auto-upload (CW-751)', () => {
       triggerStructureForWeekNumber: 1
     })
 
-    expect(mocks.upload).toHaveBeenCalledTimes(3)
+    expect(mocks.upload).toHaveBeenCalledTimes(2)
     expect(mocks.structure).toHaveBeenCalledExactlyOnceWith({
       userId: 'user-1',
       plannedWorkoutId: pending.find((row) => row.title === 'Ride')?.id,
@@ -256,6 +261,27 @@ describe('training block Intervals auto-upload (CW-751)', () => {
 
     expect(mocks.tx.plannedWorkout.createMany).toHaveBeenCalledTimes(2)
     expect(mocks.upload).not.toHaveBeenCalled()
+    expect(mocks.structure).not.toHaveBeenCalled()
+  })
+
+  it('persists zero-duration Rest days without uploading them as provider activities', async () => {
+    mocks.generate.mockResolvedValue({
+      weeks: [
+        { weekNumber: 1, workouts: [workout(1, 'Monday ride'), workout(2, 'Rest', 'Rest')] },
+        { weekNumber: 2, workouts: [workout(1, 'Next Monday')] }
+      ]
+    })
+    await runGenerateTrainingBlock({ userId: 'user-1', blockId: 'block-1' })
+
+    expect(pending).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: 'Rest', type: 'Rest', durationSec: 0 })
+      ])
+    )
+    expect(mocks.upload.mock.calls.map(([row]) => row.title)).toEqual([
+      'Monday ride',
+      'Next Monday'
+    ])
     expect(mocks.structure).not.toHaveBeenCalled()
   })
 
