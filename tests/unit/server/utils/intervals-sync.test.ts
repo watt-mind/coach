@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { prisma } from '../../../../server/utils/db'
 import {
   createIntervalsPlannedWorkout,
-  updateIntervalsPlannedWorkout
+  updateIntervalsPlannedWorkout,
+  deleteIntervalsPlannedWorkout
 } from '../../../../server/utils/intervals'
 
 vi.mock('../../../../server/utils/db', () => ({
@@ -45,6 +46,7 @@ vi.mock('../../../../server/utils/repositories/plannedWorkoutPublishRepository',
 describe('intervals-sync helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(deleteIntervalsPlannedWorkout).mockReset()
     vi.mocked(prisma.integration.findFirst).mockResolvedValue({
       id: 'integration-1',
       provider: 'intervals'
@@ -161,4 +163,86 @@ describe('intervals-sync helpers', () => {
     })
     expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
   })
+
+  it('processes DELETE after the local workout is gone, regardless of old structure revision', async () => {
+    const { processSyncQueueItem } = await import('../../../../server/utils/intervals-sync')
+    vi.mocked(prisma.plannedWorkout.findUnique).mockResolvedValue(null)
+
+    const result = await processSyncQueueItem({
+      id: 'queue-delete',
+      userId: 'user-1',
+      entityType: 'planned_workout',
+      entityId: 'deleted-workout',
+      operation: 'DELETE',
+      structureRevision: 3,
+      payload: { externalId: '12345', structureRevision: 3 },
+      attempts: 0
+    })
+
+    expect(result).toBe(true)
+    expect(deleteIntervalsPlannedWorkout).toHaveBeenCalledWith(expect.anything(), '12345')
+    expect(prisma.plannedWorkout.findUnique).not.toHaveBeenCalled()
+    expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
+    expect(prisma.syncQueue.update).toHaveBeenCalledWith({
+      where: { id: 'queue-delete' },
+      data: expect.objectContaining({ status: 'COMPLETED', attempts: 1 })
+    })
+  })
+
+  it('completes queued DELETE idempotently when the provider already removed the event', async () => {
+    const { processSyncQueueItem } = await import('../../../../server/utils/intervals-sync')
+    vi.mocked(deleteIntervalsPlannedWorkout).mockRejectedValue(
+      new Error('Intervals API error: 404 {"status":404,"error":"Event not found"}')
+    )
+
+    const result = await processSyncQueueItem({
+      id: 'queue-deleted-remote',
+      userId: 'user-1',
+      entityType: 'planned_workout',
+      entityId: 'deleted-workout',
+      operation: 'DELETE',
+      structureRevision: null,
+      payload: { externalId: '12345' },
+      attempts: 1
+    })
+
+    expect(result).toBe(true)
+    expect(prisma.syncQueue.update).toHaveBeenCalledWith({
+      where: { id: 'queue-deleted-remote' },
+      data: expect.objectContaining({ status: 'COMPLETED', attempts: 2 })
+    })
+    expect(prisma.plannedWorkout.findUnique).not.toHaveBeenCalled()
+    expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
+  })
+
+  it.each([0, 2])(
+    'records DELETE failure at attempt %s without touching the local workout',
+    async (attempts) => {
+      const { processSyncQueueItem } = await import('../../../../server/utils/intervals-sync')
+      vi.mocked(deleteIntervalsPlannedWorkout).mockRejectedValue(new Error('Provider unavailable'))
+
+      const result = await processSyncQueueItem({
+        id: 'queue-retry-delete',
+        userId: 'user-1',
+        entityType: 'planned_workout',
+        entityId: 'deleted-workout',
+        operation: 'DELETE',
+        structureRevision: null,
+        payload: { externalId: '12345' },
+        attempts
+      })
+
+      expect(result).toBe(false)
+      expect(prisma.syncQueue.update).toHaveBeenCalledWith({
+        where: { id: 'queue-retry-delete' },
+        data: expect.objectContaining({
+          status: attempts === 0 ? 'PENDING' : 'FAILED',
+          attempts: attempts + 1,
+          error: 'Provider unavailable'
+        })
+      })
+      expect(prisma.plannedWorkout.findUnique).not.toHaveBeenCalled()
+      expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
+    }
+  )
 })
