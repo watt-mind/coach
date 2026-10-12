@@ -370,7 +370,11 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
     const queuedStructureRevision =
       typeof queueItem.structureRevision === 'number' ? queueItem.structureRevision : null
     // Never replay an old structured-workout payload after a newer local edit.
-    if (queueItem.entityType === 'planned_workout' && queuedStructureRevision !== null) {
+    if (
+      queueItem.entityType === 'planned_workout' &&
+      queueItem.operation !== 'DELETE' &&
+      queuedStructureRevision !== null
+    ) {
       const current = await prisma.plannedWorkout.findUnique({
         where: { id: queueItem.entityId },
         select: { structureRevision: true }
@@ -449,7 +453,11 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
           break
         case 'DELETE':
           if (isIntervalsEventId(payload.externalId)) {
-            await deleteIntervalsPlannedWorkout(integration, payload.externalId)
+            try {
+              await deleteIntervalsPlannedWorkout(integration, payload.externalId)
+            } catch (error) {
+              if (!isIntervalsMissingEventError(error)) throw error
+            }
           }
           break
       }
@@ -476,6 +484,7 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
       where: { id: queueItem.id },
       data: {
         status: 'COMPLETED',
+        error: null,
         completedAt: new Date(),
         attempts: queueItem.attempts + 1,
         lastAttempt: new Date()
@@ -483,7 +492,7 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
     })
 
     // Update entity sync status
-    if (queueItem.entityType === 'planned_workout') {
+    if (queueItem.entityType === 'planned_workout' && queueItem.operation !== 'DELETE') {
       const publishStructure =
         payload?.structuredWorkout ||
         (
@@ -538,7 +547,7 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
 
     // Update entity with error if permanently failed
     if (newAttempts >= maxAttempts) {
-      if (queueItem.entityType === 'planned_workout') {
+      if (queueItem.entityType === 'planned_workout' && queueItem.operation !== 'DELETE') {
         await prisma.plannedWorkout.updateMany({
           where: { id: queueItem.entityId },
           data: {
