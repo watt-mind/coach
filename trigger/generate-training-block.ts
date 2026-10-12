@@ -686,25 +686,36 @@ Return valid JSON matching the schema provided.`
     // Publish only this generation's new rows, after the entire block is committed.
     // Structure generation is optional and must not gate calendar delivery.
     if (createdExternalIds.length > 0) {
-      const createdWorkouts = await prisma.plannedWorkout.findMany({
-        where: {
-          userId,
-          externalId: { in: createdExternalIds }
-        },
-        select: {
-          id: true,
-          userId: true,
-          externalId: true,
-          date: true,
-          startTime: true,
-          title: true,
-          description: true,
-          type: true,
-          durationSec: true,
-          tss: true,
-          managedBy: true
-        }
-      })
+      const createdWorkouts = await prisma.plannedWorkout
+        .findMany({
+          where: {
+            userId,
+            externalId: { in: createdExternalIds }
+          },
+          select: {
+            id: true,
+            userId: true,
+            externalId: true,
+            date: true,
+            startTime: true,
+            title: true,
+            description: true,
+            type: true,
+            durationSec: true,
+            tss: true,
+            managedBy: true
+          }
+        })
+        .catch((error: unknown) => {
+          logger.warn(
+            '[GenerateBlock] Failed to read committed workouts for Intervals auto-upload',
+            {
+              blockId,
+              error: error instanceof Error ? error.message : String(error)
+            }
+          )
+          return []
+        })
 
       for (const workout of createdWorkouts) {
         try {

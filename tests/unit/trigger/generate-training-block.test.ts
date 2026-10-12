@@ -1,4 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { logger } from '@trigger.dev/sdk/v3'
 import { runGenerateTrainingBlock } from '../../../trigger/generate-training-block'
 
 const mocks = vi.hoisted(() => ({
@@ -287,6 +288,25 @@ describe('training block Intervals auto-upload (CW-751)', () => {
     expect(mocks.upload).toHaveBeenCalledTimes(4)
     expect(mocks.structure).toHaveBeenCalledTimes(2)
     expect(mocks.tx.plannedWorkout.createMany).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps committed generation and structure requests when the upload read fails', async () => {
+    mocks.prisma.plannedWorkout.findMany.mockRejectedValueOnce(new Error('Read unavailable'))
+    const result = await runGenerateTrainingBlock({
+      userId: 'user-1',
+      blockId: 'block-1',
+      triggerStructureForWeekNumber: 1
+    })
+
+    expect(result.success).toBe(true)
+    expect(committed.filter((row) => row.id.startsWith('created-'))).toHaveLength(4)
+    expect(mocks.upload).not.toHaveBeenCalled()
+    expect(mocks.structure).toHaveBeenCalledTimes(2)
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[GenerateBlock] Failed to read committed workouts for Intervals auto-upload',
+      { blockId: 'block-1', error: 'Read unavailable' }
+    )
+    expect(logger.error).not.toHaveBeenCalled()
   })
 
   it('does not upload anything if the block was deleted during generation', async () => {
