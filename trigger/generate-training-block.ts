@@ -19,7 +19,10 @@ import { getUserAiSettings } from '../server/utils/ai-user-settings'
 import { TRAINING_BLOCK_TYPES, TRAINING_BLOCK_FOCUSES } from '../app/utils/training-constants'
 import { availabilityRepository } from '../server/utils/repositories/availabilityRepository'
 import { enqueuePlannedWorkoutStructureGeneration } from '../server/utils/planned-workout-structure-trigger'
-import { processSyncQueueItem } from '../server/utils/intervals-sync'
+import {
+  autoUploadPlannedWorkoutToIntervalsIfEnabled,
+  processSyncQueueItem
+} from '../server/utils/intervals-sync'
 import { isIntervalsEventId } from '../server/utils/intervals'
 import { registerTaskHandler } from '../server/utils/task-registry'
 import { normalizeGeneratedWorkoutType } from '../server/utils/plans/workout-type'
@@ -513,6 +516,7 @@ Return valid JSON matching the schema provided.`
   logger.log('Persisting generated plan...', { weeksCount: result.weeks.length })
 
   const workoutIdsToStructure: string[] = []
+  const createdExternalIds: string[] = []
   const intervalsDeleteItems: SyncQueue[] = []
 
   try {
@@ -705,6 +709,7 @@ Return valid JSON matching the schema provided.`
 
             if (workoutsToCreate.length > 0) {
               await tx.plannedWorkout.createMany({ data: workoutsToCreate })
+              createdExternalIds.push(...workoutsToCreate.map((workout) => workout.externalId))
 
               if (triggerStructureForWeekNumber === schedule.weekNumber) {
                 const justCreated = await tx.plannedWorkout.findMany({
@@ -744,6 +749,56 @@ Return valid JSON matching the schema provided.`
           queueItemId: item.id,
           error: error instanceof Error ? error.message : String(error)
         })
+      }
+    }
+
+    // Publish only this generation's new rows, after the entire block is committed.
+    // Structure generation is optional and must not gate calendar delivery.
+    if (createdExternalIds.length > 0) {
+      const createdWorkouts = await prisma.plannedWorkout
+        .findMany({
+          where: {
+            userId,
+            externalId: { in: createdExternalIds },
+            type: { not: 'Rest' }
+          },
+          select: {
+            id: true,
+            userId: true,
+            externalId: true,
+            date: true,
+            startTime: true,
+            title: true,
+            description: true,
+            type: true,
+            durationSec: true,
+            tss: true,
+            managedBy: true
+          }
+        })
+        .catch((error: unknown) => {
+          logger.warn(
+            '[GenerateBlock] Failed to read committed workouts for Intervals auto-upload',
+            {
+              blockId,
+              error: error instanceof Error ? error.message : String(error)
+            }
+          )
+          return []
+        })
+
+      for (const workout of createdWorkouts) {
+        try {
+          await autoUploadPlannedWorkoutToIntervalsIfEnabled(workout)
+        } catch (error) {
+          // Provider failures normally enter the helper's retry queue. An unexpected
+          // upload error must not cause a retry of already committed block generation.
+          logger.warn('[GenerateBlock] Failed to auto-upload planned workout to Intervals', {
+            blockId,
+            workoutId: workout.id,
+            error: error instanceof Error ? error.message : String(error)
+          })
+        }
       }
     }
 
