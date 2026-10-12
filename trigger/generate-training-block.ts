@@ -1,5 +1,6 @@
 import './init'
 import { logger, task } from '@trigger.dev/sdk/v3'
+import type { SyncQueue } from '@prisma/client'
 import { generateStructuredAnalysis } from '../server/utils/gemini'
 import { formatPromptHeight } from '../server/utils/ai-prompt-format'
 import { prisma } from '../server/utils/db'
@@ -18,7 +19,11 @@ import { getUserAiSettings } from '../server/utils/ai-user-settings'
 import { TRAINING_BLOCK_TYPES, TRAINING_BLOCK_FOCUSES } from '../app/utils/training-constants'
 import { availabilityRepository } from '../server/utils/repositories/availabilityRepository'
 import { enqueuePlannedWorkoutStructureGeneration } from '../server/utils/planned-workout-structure-trigger'
-import { autoUploadPlannedWorkoutToIntervalsIfEnabled } from '../server/utils/intervals-sync'
+import {
+  autoUploadPlannedWorkoutToIntervalsIfEnabled,
+  processSyncQueueItem
+} from '../server/utils/intervals-sync'
+import { isIntervalsEventId } from '../server/utils/intervals'
 import { registerTaskHandler } from '../server/utils/task-registry'
 import { normalizeGeneratedWorkoutType } from '../server/utils/plans/workout-type'
 import {
@@ -512,6 +517,7 @@ Return valid JSON matching the schema provided.`
 
   const workoutIdsToStructure: string[] = []
   const createdExternalIds: string[] = []
+  const intervalsDeleteItems: SyncQueue[] = []
 
   try {
     await prisma.$transaction(
@@ -538,6 +544,50 @@ Return valid JSON matching the schema provided.`
         const weekIds = existingWeeks.map((w) => w.id)
 
         if (weekIds.length > 0) {
+          const replacementWhere = {
+            trainingWeekId: { in: weekIds },
+            id: { notIn: anchorWorkoutIds || [] },
+            managedBy: { not: 'USER' }
+          }
+          const replacedWorkouts = await tx.plannedWorkout.findMany({
+            where: replacementWhere,
+            select: {
+              id: true,
+              userId: true,
+              externalId: true,
+              managedBy: true,
+              publishTargets: {
+                where: { provider: 'intervals' },
+                select: { externalId: true }
+              }
+            }
+          })
+
+          // Keep remote identities durable before deleting rows and cascading targets.
+          for (const workout of replacedWorkouts) {
+            const targetExternalId = workout.publishTargets[0]?.externalId ?? null
+            const externalId = isIntervalsEventId(targetExternalId)
+              ? targetExternalId
+              : workout.managedBy === 'COACH_WATTS'
+                ? workout.externalId
+                : null
+            if (!isIntervalsEventId(externalId)) continue
+
+            const queued = await tx.syncQueue.create({
+              data: {
+                userId: workout.userId,
+                entityType: 'planned_workout',
+                entityId: workout.id,
+                operation: 'DELETE',
+                structureRevision: null,
+                payload: { externalId },
+                status: 'PENDING',
+                attempts: 0
+              }
+            })
+            intervalsDeleteItems.push(queued)
+          }
+
           await tx.plannedWorkout.updateMany({
             where: { id: { in: anchorWorkoutIds || [] }, trainingWeekId: { in: weekIds } },
             data: { trainingWeekId: null }
@@ -551,11 +601,7 @@ Return valid JSON matching the schema provided.`
             data: { trainingWeekId: null }
           })
           await tx.plannedWorkout.deleteMany({
-            where: {
-              trainingWeekId: { in: weekIds },
-              id: { notIn: anchorWorkoutIds || [] },
-              managedBy: { not: 'USER' }
-            }
+            where: replacementWhere
           })
           await tx.trainingWeek.deleteMany({ where: { blockId } })
         }
@@ -682,6 +728,29 @@ Return valid JSON matching the schema provided.`
       },
       { timeout: 40000 }
     )
+
+    // Leave these idempotent DELETE items PENDING until processing completes. A
+    // caller crash must leave them available to the shared retry worker; concurrent
+    // deletion by that worker is harmless when an already removed event returns 404.
+    for (const item of intervalsDeleteItems) {
+      try {
+        const completed = await processSyncQueueItem(item)
+        if (!completed) {
+          logger.warn('[GenerateBlock] Intervals replacement deletion did not complete', {
+            blockId,
+            queueItemId: item.id
+          })
+        }
+      } catch (error) {
+        // Generation has committed. Never retry destructive generation because
+        // delivery failed, or overwrite a concurrently completed outbox item's status.
+        logger.warn('[GenerateBlock] Failed to process Intervals replacement deletion', {
+          blockId,
+          queueItemId: item.id,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
 
     // Publish only this generation's new rows, after the entire block is committed.
     // Structure generation is optional and must not gate calendar delivery.
