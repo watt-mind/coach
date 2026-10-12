@@ -561,9 +561,9 @@ Return valid JSON matching the schema provided.`
 
           // Keep remote identities durable before deleting rows and cascading targets.
           for (const workout of replacedWorkouts) {
-            const target = workout.publishTargets[0]
-            const externalId = target
-              ? target.externalId
+            const targetExternalId = workout.publishTargets[0]?.externalId ?? null
+            const externalId = isIntervalsEventId(targetExternalId)
+              ? targetExternalId
               : workout.managedBy === 'COACH_WATTS'
                 ? workout.externalId
                 : null

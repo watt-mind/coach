@@ -81,7 +81,7 @@ const oldWorkout = (id: string, externalId: string, extra = {}) => ({
   externalId,
   managedBy: 'COACH_WATTS',
   trainingWeekId: 'old-week-1',
-  publishTargets: [] as Array<{ provider: string; externalId: string }>,
+  publishTargets: [] as Array<{ provider: string; externalId: string | null }>,
   ...extra
 })
 
@@ -277,6 +277,37 @@ describe('training block replacement Intervals cleanup (CW-754)', () => {
     expect(committedQueue).toEqual([])
     expect(mocks.processDelete).not.toHaveBeenCalled()
     expect(mocks.prisma.syncQueue.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('falls back to legacy IDs for invalid targets and prefers a valid conflicting target', async () => {
+    replacedRows = [
+      oldWorkout('null-target', '101', {
+        publishTargets: [{ provider: 'intervals', externalId: null }]
+      }),
+      oldWorkout('invalid-target', '102', {
+        publishTargets: [{ provider: 'intervals', externalId: 'ai-gen-unpublished' }]
+      }),
+      oldWorkout('conflicting-target', '103', {
+        publishTargets: [{ provider: 'intervals', externalId: '104' }]
+      }),
+      oldWorkout('other-provider-null-target', '105', {
+        managedBy: 'GARMIN',
+        publishTargets: [{ provider: 'intervals', externalId: null }]
+      })
+    ]
+    await regenerate()
+
+    expect(
+      mocks.tx.syncQueue.create.mock.calls.map(([{ data }]) => [
+        data.entityId,
+        data.payload.externalId
+      ])
+    ).toEqual([
+      ['null-target', '101'],
+      ['invalid-target', '102'],
+      ['conflicting-target', '104']
+    ])
+    expect(mocks.processDelete).toHaveBeenCalledTimes(3)
   })
 
   it('keeps provider failures retryable without failing committed generation or structure', async () => {
