@@ -34,7 +34,7 @@ jobs:
     # `docker` is not a sufficient label either — it matches lab-1/lab-2/web-1.
     # `shadow` matches the build pool exactly. Bare `self-hosted` would also match
     # `mac-mini`, which fails GHCR push with an anonymous-token 403.
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, linux-vm]
     timeout-minutes: 60
     # NOTE (CW-129): this must be the environment that actually has
     # DOKPLOY_WEBHOOK_URL configured (Settings > Environments). Environment
