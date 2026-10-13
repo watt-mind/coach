@@ -23,7 +23,7 @@ env:
 jobs:
   analyze:
     name: CodeQL Security Scan
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, linux-container]
     timeout-minutes: 30
     strategy:
       fail-fast: false

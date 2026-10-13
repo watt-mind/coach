@@ -48,7 +48,7 @@ jobs:
     # Pin to the `shadow` build pool, same reasoning as deploy.yml (CW-608): the
     # generic `[self-hosted, Linux]` also matches the `watt-mind-lab-smoke-*`
     # pool, which is sized for curl/smoke checks and starves under a real build.
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, linux-vm]
     timeout-minutes: 30
     environment: ${{ inputs.environment }}
     # Job-level (not workflow-level) so the group stays distinct from the caller's
