@@ -26,7 +26,7 @@ concurrency:
 jobs:
   typecheck:
     name: Typecheck
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, azure]
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -60,7 +60,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, azure]
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -97,7 +97,7 @@ jobs:
 
   unit-tests:
     name: Unit tests
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, azure]
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -134,7 +134,7 @@ jobs:
 
   mcp-tests:
     name: MCP tests
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, azure]
     timeout-minutes: 20
     steps:
       - name: Checkout code
