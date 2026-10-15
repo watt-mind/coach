@@ -3,7 +3,11 @@ import { getResend } from '../email'
 import { registerTaskHandler } from '../task-registry'
 import { generateUnsubscribeToken } from '../unsubscribe-token'
 import { EMAIL_TEMPLATE_REGISTRY, getEmailTemplateDefinition } from '../email-template-registry'
-import { getInternalApiToken } from '../internal-api-token'
+import {
+  describeInternalAuthFailure,
+  getInternalApiToken,
+  parseInternalAuthFailureReason
+} from '../internal-api-token'
 import { resolveEmailSubject } from '../email-i18n'
 import type { EmailAudience, EmailDeliveryStatus } from '@prisma/client'
 
@@ -336,7 +340,11 @@ export const EmailDeliveryService = {
     const renderUrl = `${baseUrl}/api/internal/render-email`
     const internalApiToken = getInternalApiToken()
     if (!internalApiToken) {
-      throw new Error('INTERNAL_API_TOKEN is not configured')
+      throw new Error(
+        'INTERNAL_API_TOKEN is not configured on this service, so ' +
+          `${renderUrl} cannot be called. Set INTERNAL_API_TOKEN to the same value ` +
+          'on the web service and the worker service of this deployment.'
+      )
     }
 
     const response = await fetch(renderUrl, {
@@ -350,6 +358,25 @@ export const EmailDeliveryService = {
 
     if (!response.ok) {
       const errorText = await response.text()
+
+      if (response.status === 401) {
+        // CW-290: a 401 here is always an environment fault between two
+        // services of the same app, never a logic bug. Name the specific fault
+        // so the error says which service to fix. Nothing derived from the
+        // token value goes into this message — it propagates into every log
+        // sink that logs an email failure.
+        const reason = parseInternalAuthFailureReason(errorText)
+        const explanation = reason
+          ? describeInternalAuthFailure(reason)
+          : "the web service rejected this service's x-internal-api-token"
+
+        throw new Error(
+          `Render API rejected the internal API token (401 from ${renderUrl}): ${explanation}. ` +
+            'INTERNAL_API_TOKEN must be set, and identical, on both the web service and the ' +
+            'worker service of this deployment.'
+        )
+      }
+
       throw new Error(`Render API failed (${response.status}): ${errorText}`)
     }
 
