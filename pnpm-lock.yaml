@@ -49,7 +49,7 @@ importers:
         version: 3.15.0(@electric-sql/pglite@0.4.3)(@valibot/to-json-schema@1.7.1(valibot@1.4.2(typescript@5.9.3)))(better-sqlite3@12.11.1)(esbuild@0.28.1)(magic-string@1.1.0)(magicast@0.3.5)(mysql2@3.15.3)(oxc-parser@0.140.0)(rolldown@1.2.0)(rollup@4.62.2)(supports-color@10.2.2)(valibot@1.4.2(typescript@5.9.3))(vite@8.1.5(@types/node@24.10.4)(esbuild@0.28.1)(jiti@1.21.7)(terser@5.49.0)(tsx@4.21.0)(yaml@2.9.0))
       '@nuxt/ui':
         specifier: ^4.9.0
-        version: 4.9.0(225aa1a4d364a411d1926cf4f05e3627)
+        version: 4.9.0(4062115bb288f75a32338f9fbbe75ddf)
       '@nuxtjs/mdc':
         specifier: ^0.22.2
         version: 0.22.2(magic-string@1.1.0)(magicast@0.3.5)(oxc-parser@0.140.0)(rolldown@1.2.0)(supports-color@10.2.2)(unplugin@3.3.0(esbuild@0.28.1)(rolldown@1.2.0)(rollup@4.62.2)(vite@8.1.5(@types/node@24.10.4)(esbuild@0.28.1)(jiti@1.21.7)(terser@5.49.0)(tsx@4.21.0)(yaml@2.9.0)))
@@ -90,8 +90,8 @@ importers:
         specifier: ^3.27.3
         version: 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
       '@tiptap/extension-placeholder':
-        specifier: ^3.29.1
-        version: 3.29.1(@tiptap/extensions@3.29.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))
+        specifier: ^3.30.1
+        version: 3.30.1(@tiptap/extensions@3.30.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))
       '@tiptap/extension-text-align':
         specifier: ^3.27.3
         version: 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))
@@ -4692,10 +4692,10 @@ packages:
     peerDependencies:
       '@tiptap/core': 3.27.3
 
-  '@tiptap/extension-placeholder@3.29.1':
-    resolution: {integrity: sha512-5phpBILHAJhvJUnbne7mCiisYstD0CWakhuTCRl2ugxL664Ew2+avnRIKIjww2O6aL2eue1StJDI5kPdVHrnAw==}
+  '@tiptap/extension-placeholder@3.30.1':
+    resolution: {integrity: sha512-z0WAMWLF6Hh3C1kuhcYVA3srK0J7d7UNdrY8hw4LlrhmJv1xIoZSUIwH+c8WkMJ5c79idL2zpeWVCtGEyH8UHw==}
     peerDependencies:
-      '@tiptap/extensions': 3.29.1
+      '@tiptap/extensions': 3.30.1
 
   '@tiptap/extension-strike@3.27.3':
     resolution: {integrity: sha512-dp6Rs3I4zLVJPvAw2Q9yrNuYKcX5LTONH3/oyULvGsrqq5DKz7pqscfwhwnDSzrgm/3aCz6B9r1BVHlYI/DXlA==}
@@ -4723,11 +4723,11 @@ packages:
       '@tiptap/core': 3.27.3
       '@tiptap/pm': 3.27.3
 
-  '@tiptap/extensions@3.29.1':
-    resolution: {integrity: sha512-GZMW2r56dnTS28o2wlW8vHxUU4hofZryw03eJnch+amap96tjSU81aV0JCHUN/ySd43KKR5fEZMjhELk6VeYpQ==}
+  '@tiptap/extensions@3.30.1':
+    resolution: {integrity: sha512-prNrvF1oMj+tngCLmZgXzQfuUuvYMbCe2sEPXXKJPqJNNffHd2wAuUZ0h6UQS5aRILaxB2kN1/yfwpxnhRpwYA==}
     peerDependencies:
-      '@tiptap/core': 3.29.1
-      '@tiptap/pm': 3.29.1
+      '@tiptap/core': 3.30.1
+      '@tiptap/pm': 3.30.1
 
   '@tiptap/markdown@3.13.0':
     resolution: {integrity: sha512-BI1GZxDFBrEeYbngbKh/si48tRSXO6HVGg7KzlfOwdncSD982/loG2KUnFIjoVGjmMzXNDWbI6O/eqfLVQPB5Q==}
@@ -14919,7 +14919,7 @@ snapshots:
       - vite
       - webpack
 
-  '@nuxt/ui@4.9.0(225aa1a4d364a411d1926cf4f05e3627)':
+  '@nuxt/ui@4.9.0(4062115bb288f75a32338f9fbbe75ddf)':
     dependencies:
       '@floating-ui/dom': 1.7.6
       '@iconify/vue': 5.0.1(vue@3.5.41(typescript@5.9.3))
@@ -14944,7 +14944,7 @@ snapshots:
       '@tiptap/extension-image': 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))
       '@tiptap/extension-mention': 3.13.0(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)(@tiptap/suggestion@3.13.0(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))
       '@tiptap/extension-node-range': 3.14.0(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
-      '@tiptap/extension-placeholder': 3.29.1(@tiptap/extensions@3.29.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))
+      '@tiptap/extension-placeholder': 3.30.1(@tiptap/extensions@3.30.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))
       '@tiptap/markdown': 3.13.0(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
       '@tiptap/pm': 3.27.3
       '@tiptap/starter-kit': 3.27.3
@@ -17002,9 +17002,9 @@ snapshots:
     dependencies:
       '@tiptap/core': 3.27.3(@tiptap/pm@3.27.3)
 
-  '@tiptap/extension-placeholder@3.29.1(@tiptap/extensions@3.29.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))':
+  '@tiptap/extension-placeholder@3.30.1(@tiptap/extensions@3.30.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))':
     dependencies:
-      '@tiptap/extensions': 3.29.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
+      '@tiptap/extensions': 3.30.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
 
   '@tiptap/extension-strike@3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))':
     dependencies:
@@ -17027,7 +17027,7 @@ snapshots:
       '@tiptap/core': 3.27.3(@tiptap/pm@3.27.3)
       '@tiptap/pm': 3.27.3
 
-  '@tiptap/extensions@3.29.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)':
+  '@tiptap/extensions@3.30.1(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)':
     dependencies:
       '@tiptap/core': 3.27.3(@tiptap/pm@3.27.3)
       '@tiptap/pm': 3.27.3
