@@ -379,16 +379,10 @@ export default defineNuxtConfig({
               process.env.APPLE_KEY_ID &&
               process.env.APPLE_PRIVATE_KEY)))
       ),
-      tolgee: {
-        apiUrl:
-          process.env.TOLGEE_API_ENABLED === 'true'
-            ? process.env.NUXT_PUBLIC_TOLGEE_API_URL || process.env.TOLGEE_API_URL
-            : undefined,
-        apiKey:
-          process.env.TOLGEE_API_ENABLED === 'true'
-            ? process.env.NUXT_PUBLIC_TOLGEE_API_KEY || process.env.TOLGEE_API_KEY
-            : undefined
-      },
+      // NOTE: `tolgee` is deliberately absent here. The Tolgee API key is a
+      // secret and `runtimeConfig.public` is serialised into the client payload
+      // for every visitor. It is declared only under `$development` below, so a
+      // production build never carries the key. See CW-610.
       gtag: {
         // Overridden at runtime by NUXT_PUBLIC_GTAG_ID (Dokploy). Empty at build
         // is fine — the client plugin no-ops until an id is present.
@@ -396,6 +390,42 @@ export default defineNuxtConfig({
         enabled: true
       },
       realtimeBusEnabled: !!process.env.REDIS_URL
+    }
+  },
+
+  // Dev-server-only public runtime config (CW-610).
+  //
+  // Tolgee's in-context translation DevTools need `apiUrl` + `apiKey` in the
+  // browser, but `runtimeConfig.public` is serialised into the HTML payload of
+  // every response — so a key placed there ships to every visitor, in every
+  // environment, regardless of `import.meta.dev`.
+  //
+  // `$development` is applied by c12 only when `nuxt.options.dev` is true, i.e.
+  // `nuxt dev`. `nuxt build` never merges this block, so `public.tolgee` is not
+  // a key of the inlined runtime config at all in a production build. That also
+  // closes the runtime env-override path: nitro's `applyEnv`
+  // (nitropack/dist/runtime/internal/utils.env.mjs) walks `for (const key in
+  // obj)`, so `NUXT_PUBLIC_TOLGEE_API_KEY` can only overwrite a key that is
+  // already declared — it cannot create one. Setting `TOLGEE_API_ENABLED=true`
+  // on a deployed stack is therefore inert instead of leaking the key.
+  //
+  // Do NOT move this back under `runtimeConfig.public`, and do NOT add an
+  // empty-string `apiKey` default there to "keep the shape stable" — declaring
+  // the key is exactly what reopens the env-override path.
+  $development: {
+    runtimeConfig: {
+      public: {
+        tolgee: {
+          apiUrl:
+            process.env.TOLGEE_API_ENABLED === 'true'
+              ? process.env.NUXT_PUBLIC_TOLGEE_API_URL || process.env.TOLGEE_API_URL
+              : undefined,
+          apiKey:
+            process.env.TOLGEE_API_ENABLED === 'true'
+              ? process.env.NUXT_PUBLIC_TOLGEE_API_KEY || process.env.TOLGEE_API_KEY
+              : undefined
+        }
+      }
     }
   },
 
