@@ -40,7 +40,7 @@
     "@vue-email/nuxt": "^0.8.19",
     "@vue-leaflet/vue-leaflet": "^0.10.1",
     "@vueuse/core": "^14.3.0",
-    "ai": "^7.0.37",
+    "ai": "^7.0.65",
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^12.11.1",
     "bullmq": "^5.79.3",
