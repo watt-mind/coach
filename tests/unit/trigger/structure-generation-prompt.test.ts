@@ -130,7 +130,41 @@ describe('structure generation prompt helpers', () => {
     })
 
     expect(first.disableThinking).toBe(true)
+    expect(first.thinkingLevelOverride).toBeUndefined()
+    expect(second.disableThinking).toBeUndefined()
     expect(second.thinkingLevelOverride).toBe('low')
+  })
+
+  it('keeps the adjust flow retry thinking level while disabling thinking on attempt 1', () => {
+    const base = {
+      userId: 'user-1',
+      operation: 'adjust_structured_workout',
+      entityType: 'PlannedWorkout',
+      entityId: 'pw-1',
+      timeoutMs: 45_000,
+      retryThinkingLevel: 'high' as const
+    }
+    const first = buildStructureAiCallOptions({ ...base, attempt: 1 })
+    const second = buildStructureAiCallOptions({ ...base, attempt: 2 })
+
+    expect(first).toEqual({
+      userId: 'user-1',
+      operation: 'adjust_structured_workout',
+      entityType: 'PlannedWorkout',
+      entityId: 'pw-1',
+      maxRetries: 0,
+      timeoutMs: 45_000,
+      disableThinking: true
+    })
+    expect(second).toEqual({
+      userId: 'user-1',
+      operation: 'adjust_structured_workout',
+      entityType: 'PlannedWorkout',
+      entityId: 'pw-1',
+      maxRetries: 0,
+      timeoutMs: 45_000,
+      thinkingLevelOverride: 'high'
+    })
   })
 
   it('detects strength workout types', () => {
