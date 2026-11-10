@@ -142,3 +142,152 @@ describe('PATCH /api/goals/:id event IDOR', () => {
     })
   })
 })
+
+describe('PATCH /api/goals/:id editable fields', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(requireAuth).mockResolvedValue({ id: 'attacker-1' } as any)
+    vi.mocked(prisma.goal.findUnique).mockResolvedValue(ownedGoal as any)
+    vi.mocked(prisma.goal.update).mockResolvedValue(ownedGoal as any)
+  })
+
+  it('ignores protected scalars, raw relations, and unknown fields', async () => {
+    const handler = await getHandler()
+    await handler({
+      context: { params: { id: 'goal-1' } },
+      body: {
+        title: 'Updated goal',
+        id: 'replacement-id',
+        userId: 'victim-1',
+        createdAt: '2000-01-01',
+        updatedAt: '2000-01-01',
+        user: { connect: { id: 'victim-1' } },
+        events: { connect: [{ id: 'victim-event-1' }] },
+        trainingPlans: { create: { userId: 'victim-1' } },
+        unknownField: true
+      }
+    } as any)
+
+    expect(prisma.goal.update).toHaveBeenCalledWith({
+      where: { id: 'goal-1' },
+      data: { title: 'Updated goal', updatedAt: expect.any(Date) }
+    })
+    expect(prisma.event.findMany).not.toHaveBeenCalled()
+    expect(prisma.event.create).not.toHaveBeenCalled()
+    expect(prisma.event.update).not.toHaveBeenCalled()
+    expect(prisma.event.upsert).not.toHaveBeenCalled()
+  })
+
+  it('preserves every editable field and converts both dates', async () => {
+    const handler = await getHandler()
+    const edits = {
+      type: 'EVENT',
+      title: 'Race goal',
+      description: '',
+      metric: 'distance',
+      currentValue: 0,
+      targetValue: 0,
+      startValue: 0,
+      targetDate: '2027-01-01T00:00:00.000Z',
+      eventDate: '2027-01-02T00:00:00.000Z',
+      eventType: 'RACE',
+      status: 'ACTIVE',
+      priority: 'HIGH',
+      aiContext: null,
+      distance: 0,
+      duration: 0,
+      elevation: 0,
+      phase: '',
+      terrain: ''
+    }
+    await handler({ context: { params: { id: 'goal-1' } }, body: edits } as any)
+
+    expect(prisma.goal.update).toHaveBeenCalledWith({
+      where: { id: 'goal-1' },
+      data: {
+        ...edits,
+        targetDate: new Date(edits.targetDate),
+        eventDate: new Date(edits.eventDate),
+        updatedAt: expect.any(Date)
+      }
+    })
+  })
+
+  it('preserves explicit null dates without adding omitted fields', async () => {
+    const handler = await getHandler()
+    await handler({
+      context: { params: { id: 'goal-1' } },
+      body: { targetDate: null, eventDate: null, description: null }
+    } as any)
+    expect(prisma.goal.update).toHaveBeenCalledWith({
+      where: { id: 'goal-1' },
+      data: { targetDate: null, eventDate: null, description: null, updatedAt: expect.any(Date) }
+    })
+  })
+
+  it('links a validated owned eventId despite a raw relation payload', async () => {
+    const handler = await getHandler()
+    vi.mocked(prisma.event.findMany).mockResolvedValue([{ id: 'owned-event-1' }] as any)
+    await handler({
+      context: { params: { id: 'goal-1' } },
+      body: {
+        eventId: 'owned-event-1',
+        events: { connect: { id: 'victim-event-1' } }
+      }
+    } as any)
+    expect(prisma.event.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ['owned-event-1'] }, userId: 'attacker-1' },
+      select: { id: true }
+    })
+    expect(prisma.goal.update).toHaveBeenCalledWith({
+      where: { id: 'goal-1' },
+      data: { events: { set: [{ id: 'owned-event-1' }] }, updatedAt: expect.any(Date) }
+    })
+  })
+
+  it('allows clearing event links through eventIds', async () => {
+    const handler = await getHandler()
+    await handler({
+      context: { params: { id: 'goal-1' } },
+      body: { eventIds: [] }
+    } as any)
+    expect(prisma.event.findMany).not.toHaveBeenCalled()
+    expect(prisma.goal.update).toHaveBeenCalledWith({
+      where: { id: 'goal-1' },
+      data: { events: { set: [] }, updatedAt: expect.any(Date) }
+    })
+  })
+
+  it('retains eventData upserts scoped to the authenticated user', async () => {
+    const handler = await getHandler()
+    vi.mocked(prisma.event.upsert).mockResolvedValue({ id: 'owned-event-1' } as any)
+    await handler({
+      context: { params: { id: 'goal-1' } },
+      body: {
+        eventData: {
+          externalId: 'race-1',
+          source: 'MANUAL',
+          title: 'Race',
+          date: '2027-01-01T00:00:00.000Z',
+          userId: 'victim-1'
+        },
+        events: { connect: { id: 'victim-event-1' } }
+      }
+    } as any)
+    expect(prisma.event.upsert).toHaveBeenCalledWith({
+      where: {
+        userId_source_externalId: {
+          userId: 'attacker-1',
+          source: 'MANUAL',
+          externalId: 'race-1'
+        }
+      },
+      update: expect.objectContaining({ title: 'Race', date: new Date('2027-01-01') }),
+      create: expect.objectContaining({ userId: 'attacker-1', title: 'Race' })
+    })
+    expect(prisma.goal.update).toHaveBeenCalledWith({
+      where: { id: 'goal-1' },
+      data: { events: { connect: { id: 'owned-event-1' } }, updatedAt: expect.any(Date) }
+    })
+  })
+})

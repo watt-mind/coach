@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import { prisma } from '../../utils/db'
 import { requireAuth } from '../../utils/auth-guard'
 
@@ -95,8 +94,34 @@ export default defineEventHandler(async (event) => {
   const body = await readBody(event)
 
   // Handle Event updates
-  const { eventData, eventId, eventIds, ...goalData } = body
-  const data: any = { ...goalData }
+  const { eventData, eventId, eventIds } = body
+  // Only editable API fields may become Prisma update data. Relations are handled below.
+  const editableFields = [
+    'type',
+    'title',
+    'description',
+    'metric',
+    'currentValue',
+    'targetValue',
+    'startValue',
+    'targetDate',
+    'eventDate',
+    'eventType',
+    'status',
+    'priority',
+    'aiContext',
+    'distance',
+    'duration',
+    'elevation',
+    'phase',
+    'terrain'
+  ] as const
+  const data: any = {}
+  for (const field of editableFields) {
+    if (Object.prototype.hasOwnProperty.call(body, field)) {
+      data[field] = body[field]
+    }
+  }
 
   const requestedEventIds: string[] | null =
     eventIds && Array.isArray(eventIds) ? eventIds : eventId ? [eventId] : null
