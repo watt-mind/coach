@@ -277,7 +277,7 @@
               </div>
 
               <!-- Evolution History -->
-              <div v-if="rec.history && rec.history.length > 0" class="space-y-4">
+              <div v-if="hasHistoryTimeline" class="space-y-4">
                 <h3 class="text-xl font-bold text-gray-900 dark:text-white px-4 sm:px-0">
                   Evolution History
                 </h3>
@@ -320,6 +320,14 @@
                     </div>
                   </div>
                 </div>
+              </div>
+              <div v-else-if="hasUnsupportedHistory" class="space-y-4">
+                <h3 class="text-xl font-bold text-gray-900 dark:text-white px-4 sm:px-0">
+                  Evolution History
+                </h3>
+                <p class="text-sm text-muted px-4 sm:px-0">
+                  History unavailable for this recommendation.
+                </p>
               </div>
             </div>
 
@@ -401,8 +409,18 @@
     }
   })
 
+  // `history` is a Prisma Json column carrying two schemas: an append-only
+  // array of history items, or a single threshold-detection object
+  // ({ oldValue, newValue, ... }). Only the array renders as a timeline.
+  const hasHistoryTimeline = computed(
+    () => Array.isArray(rec.value?.history) && rec.value.history.length > 0
+  )
+  const hasUnsupportedHistory = computed(
+    () => rec.value?.history != null && !Array.isArray(rec.value?.history)
+  )
+
   const sortedHistory = computed(() => {
-    if (!rec.value?.history) return []
+    if (!hasHistoryTimeline.value) return []
     // Sort descending by date (newest first)
     return [...rec.value.history].reverse()
   })
