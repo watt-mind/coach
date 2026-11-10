@@ -8,8 +8,18 @@ import * as Sentry from '@sentry/nuxt'
 function scrubSentryData<T>(value: T): T {
   if (typeof value === 'string') {
     return value.replace(
-      /(^|[?&;])((?:code|state|access_token|refresh_token|id_token|client_secret)=)[^&#;\s]*/gi,
-      '$1$2[Filtered]'
+      /(^|[?&;])([^=?&#;\s]+)=([^&#;\s]*)/g,
+      (match, separator: string, name: string) => {
+        let decodedName: string
+        try {
+          decodedName = decodeURIComponent(name.replace(/\+/g, ' '))
+        } catch {
+          return match
+        }
+        return /^(code|state|access_token|refresh_token|id_token|client_secret)$/i.test(decodedName)
+          ? `${separator}${name}=[Filtered]`
+          : match
+      }
     ) as T
   }
   if (Array.isArray(value)) return value.map(scrubSentryData) as T
@@ -60,6 +70,9 @@ if (!config.public.sentryEnabled || !config.public.sentryDsn) {
     ],
     beforeBreadcrumb(breadcrumb) {
       return scrubSentryData(breadcrumb)
+    },
+    beforeSendTransaction(event) {
+      return scrubSentryData(event)
     },
     beforeSendSpan(span) {
       return scrubSentryData(span)
