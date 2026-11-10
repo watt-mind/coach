@@ -10,7 +10,7 @@ import { generateWsToken } from '../utils/ws-auth'
  * those scopes). Session and API-key mints are unrestricted (`scopes: null`).
  */
 export default defineEventHandler(async (event) => {
-  const user = await requireAuth(event)
+  const user = await requireAuth(event, undefined, { allowOAuth: true })
 
   const scopes =
     event.context.authType === 'oauth' ? ((event.context.oauthScopes as string[]) ?? []) : null

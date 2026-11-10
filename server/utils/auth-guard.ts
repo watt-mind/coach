@@ -52,10 +52,10 @@ export async function validateOAuthToken(event: H3Event) {
 
 export interface RequireAuthOptions {
   /**
-   * Whether OAuth bearer tokens are accepted. Defaults to true.
-   * Browser/internal endpoints that must not be reachable with a scoped
-   * third-party token (e.g. full account export, session minting) pass
-   * `false` so only cookie sessions and API keys authenticate.
+   * Whether OAuth bearer tokens are accepted without required scopes. Defaults to false.
+   * Nonempty requiredScopes explicitly permit scoped OAuth access. Set false
+   * to reject OAuth even with required scopes, or true to deliberately permit
+   * OAuth without required scopes (e.g. scope-preserving websocket tokens).
    */
   allowOAuth?: boolean
 }
@@ -109,7 +109,10 @@ export async function requireAuth(
   const oauth = await validateOAuthToken(event)
   if (oauth) {
     ensureActiveUser(oauth.user)
-    if (options?.allowOAuth === false) {
+    if (
+      options?.allowOAuth === false ||
+      (options?.allowOAuth !== true && !requiredScopes?.length)
+    ) {
       throw createError({
         statusCode: 403,
         message: 'OAuth bearer tokens are not accepted on this endpoint'
