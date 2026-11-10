@@ -1,0 +1,72 @@
+name: Setup Node + pnpm
+description: >
+  Install pnpm and Node, restore the pnpm store, install dependencies and
+  (optionally) run `nuxt prepare`. Shared by the CI and E2E workflows so the
+  setup lives in one place.
+
+inputs:
+  nuxt-prepare:
+    description: Run `pnpm exec nuxt prepare` after installing dependencies.
+    required: false
+    default: 'false'
+
+outputs:
+  cache-hit:
+    description: "'true' when the pnpm store was restored from an exact key match."
+    value: ${{ steps.restore.outputs.cache-hit }}
+  cache-key:
+    description: Primary cache key for the pnpm store (pass to actions/cache/save).
+    value: ${{ steps.store.outputs.key }}
+  store-path:
+    description: Path of the pnpm store (pass to actions/cache/save).
+    value: ${{ steps.store.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      with:
+        # Install into the job's own RUNNER_TEMP, never the action's default
+        # `~/setup-pnpm`. On the self-hosted hosts several runner registrations
+        # share one `$HOME`, so the default path is shared state: two jobs on the
+        # same host raced to self-update pnpm into it and both died before
+        # running anything (`ENOTEMPTY: rmdir '~/setup-pnpm'`). RUNNER_TEMP is
+        # allocated per job, so jobs cannot collide here. See CW-630.
+        dest: ${{ runner.temp }}/setup-pnpm
+
+    - name: Setup Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      with:
+        node-version-file: '.nvmrc'
+        # No `cache: pnpm` here on purpose: setup-node's post step makes *every*
+        # parallel job try to save the same ~460 MB store on a cache miss — all
+        # but one lose the reservation after spending ~20s compressing it. We
+        # restore here and let exactly one job per workflow save (see callers).
+
+    - name: Resolve pnpm store
+      id: store
+      shell: bash
+      run: |
+        echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+        echo "key=pnpm-store-v1-${RUNNER_OS}-${{ hashFiles('pnpm-lock.yaml') }}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore pnpm store
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: ${{ steps.store.outputs.key }}
+        # A lockfile change (e.g. every Dependabot PR) still starts from the
+        # nearest previous store instead of downloading all ~2,250 packages.
+        restore-keys: |
+          pnpm-store-v1-${{ runner.os }}-
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Prepare Nuxt
+      if: inputs.nuxt-prepare == 'true'
+      shell: bash
+      run: pnpm exec nuxt prepare
