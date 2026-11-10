@@ -7,8 +7,8 @@ on:
       - '**.md'
       - '.gitignore'
       - 'LICENSE'
-  # Called by deploy.yml so master pushes gate the Docker build on lint/typecheck/tests
-  # instead of racing it. Do not add a `push` trigger back — that would double-run CI.
+  # Called by deploy.yml so master/develop pushes gate the Dokploy release on
+  # lint/typecheck/tests. Do not add a `push` trigger back — that would double-run CI.
   workflow_call:
 
 permissions:
@@ -23,6 +23,12 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Job names `Typecheck`, `Lint` and `Unit tests` are required status checks on
+# develop/master branch protection — do not rename them.
+#
+# Self-hosted runner slots are the bottleneck (PR runs spend more time queued
+# than executing), so keep the job count low: anything that takes seconds rides
+# along in an existing job instead of paying ~1 min of setup on its own runner.
 jobs:
   typecheck:
     name: Typecheck
@@ -32,29 +38,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          # Install into the job's own RUNNER_TEMP, never the action's default
-          # `~/setup-pnpm`. On the self-hosted shadow host, several runner
-          # registrations share one `$HOME`, so the default path is shared state:
-          # two of this workflow's four jobs landing on the same host raced to
-          # self-update pnpm into it and both died before running anything
-          # (`ENOTEMPTY: rmdir '/home/hdkiller/setup-pnpm'` and
-          # `self-installer exits with code 1`). RUNNER_TEMP is allocated per job
-          # and cleaned between jobs, so two jobs cannot collide here regardless
-          # of how the runners are registered. See CW-630.
-          dest: ${{ runner.temp }}/setup-pnpm
+      - name: Setup Node + pnpm
+        uses: ./.github/actions/setup-node-pnpm
 
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: '.nvmrc'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
+      # `nuxt typecheck` runs `nuxt prepare` itself.
       - name: Run Nuxt typecheck
         run: pnpm typecheck
 
@@ -66,34 +53,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - name: Setup Node + pnpm
+        id: setup
+        uses: ./.github/actions/setup-node-pnpm
         with:
-          # Install into the job's own RUNNER_TEMP, never the action's default
-          # `~/setup-pnpm`. On the self-hosted shadow host, several runner
-          # registrations share one `$HOME`, so the default path is shared state:
-          # two of this workflow's four jobs landing on the same host raced to
-          # self-update pnpm into it and both died before running anything
-          # (`ENOTEMPTY: rmdir '/home/hdkiller/setup-pnpm'` and
-          # `self-installer exits with code 1`). RUNNER_TEMP is allocated per job
-          # and cleaned between jobs, so two jobs cannot collide here regardless
-          # of how the runners are registered. See CW-630.
-          dest: ${{ runner.temp }}/setup-pnpm
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: '.nvmrc'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare Nuxt
-        run: pnpm exec nuxt prepare
+          nuxt-prepare: 'true'
 
       - name: Run ESLint
         run: pnpm lint
+
+      # The only job that saves the pnpm store (it is the shortest one, so the
+      # upload stays off the critical path). Saving from every job made all but
+      # one fail the cache reservation after ~20s of compression each.
+      - name: Prune pnpm store
+        if: steps.setup.outputs.cache-hit != 'true'
+        run: pnpm store prune
+
+      - name: Save pnpm store
+        if: steps.setup.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ steps.setup.outputs.store-path }}
+          key: ${{ steps.setup.outputs.cache-key }}
 
   unit-tests:
     name: Unit tests
@@ -103,68 +84,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - name: Setup Node + pnpm
+        uses: ./.github/actions/setup-node-pnpm
         with:
-          # Install into the job's own RUNNER_TEMP, never the action's default
-          # `~/setup-pnpm`. On the self-hosted shadow host, several runner
-          # registrations share one `$HOME`, so the default path is shared state:
-          # two of this workflow's four jobs landing on the same host raced to
-          # self-update pnpm into it and both died before running anything
-          # (`ENOTEMPTY: rmdir '/home/hdkiller/setup-pnpm'` and
-          # `self-installer exits with code 1`). RUNNER_TEMP is allocated per job
-          # and cleaned between jobs, so two jobs cannot collide here regardless
-          # of how the runners are registered. See CW-630.
-          dest: ${{ runner.temp }}/setup-pnpm
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: '.nvmrc'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare Nuxt
-        run: pnpm exec nuxt prepare
+          nuxt-prepare: 'true'
 
       - name: Run unit tests
+        id: unit
         run: pnpm test:unit
 
-  mcp-tests:
-    name: MCP tests
-    runs-on: [self-hosted, linux-container]
-    timeout-minutes: 20
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          # Install into the job's own RUNNER_TEMP, never the action's default
-          # `~/setup-pnpm`. On the self-hosted shadow host, several runner
-          # registrations share one `$HOME`, so the default path is shared state:
-          # two of this workflow's four jobs landing on the same host raced to
-          # self-update pnpm into it and both died before running anything
-          # (`ENOTEMPTY: rmdir '/home/hdkiller/setup-pnpm'` and
-          # `self-installer exits with code 1`). RUNNER_TEMP is allocated per job
-          # and cleaned between jobs, so two jobs cannot collide here regardless
-          # of how the runners are registered. See CW-630.
-          dest: ${{ runner.temp }}/setup-pnpm
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: '.nvmrc'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare Nuxt
-        run: pnpm exec nuxt prepare
-
+      # Previously its own job: ~6s of tests behind ~70s of setup on a separate
+      # runner slot. Still runs when unit tests fail, so both results show up.
       - name: Run MCP server tests
+        if: ${{ !cancelled() && (steps.unit.outcome == 'success' || steps.unit.outcome == 'failure') }}
         run: pnpm test:mcp

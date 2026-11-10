@@ -20,9 +20,20 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
+concurrency:
+  # A new push to a PR supersedes its in-flight scan (previously every push
+  # queued another full CodeQL run on the shared runner pool). Branch pushes and
+  # the weekly schedule are never cancelled.
+  group: security-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: CodeQL Security Scan
+    # Dependabot PRs only bump package.json / pnpm-lock.yaml / action pins —
+    # nothing CodeQL's JS/TS source analysis looks at — so skip them instead of
+    # burning a runner slot per bump. The post-merge push scan still covers them.
+    if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: [self-hosted, linux-container]
     timeout-minutes: 30
     strategy:
