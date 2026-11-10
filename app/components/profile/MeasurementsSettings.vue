@@ -852,7 +852,18 @@
   }
 
   async function saveMeasurement() {
+    const imperialHeight = selectedMetricCategory.value === 'height' && prefersImperialHeight.value
+    const feet =
+      heightFt.value == null || String(heightFt.value).trim() === '' ? 0 : Number(heightFt.value)
+    const inches =
+      heightIn.value == null || String(heightIn.value).trim() === '' ? 0 : Number(heightIn.value)
     if (
+      (imperialHeight &&
+        (!Number.isFinite(feet) ||
+          !Number.isFinite(inches) ||
+          feet < 0 ||
+          inches < 0 ||
+          feet * 12 + inches <= 0)) ||
       (selectedMetricCategory.value === 'height' && !prefersImperialHeight.value && !value.value) ||
       (selectedMetricCategory.value !== 'height' && !value.value)
     ) {
