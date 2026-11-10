@@ -114,9 +114,8 @@ jobs:
       - name: Pre-clean this run's stack
         run: pnpm e2e:down || true
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-
+      # No setup-buildx here: e2e-setup.sh builds on the daemon's default BuildKit
+      # builder so layer + pnpm caches persist on this host between runs.
       - name: Build and start Docker e2e stack
         run: pnpm e2e:setup
 
@@ -159,10 +158,14 @@ jobs:
         # and then re-ran the whole audit from scratch (~17 min per run), and an
         # assertion failure was likewise retried in full. The step timeout below
         # is the only bound we need.
+        #
+        # PR runs audit the core page set once per URL; manual dispatches run
+        # the full 22-URL x 2-run audit (LHCI_FULL, see lighthouserc.cjs).
         timeout-minutes: 25
         run: pnpm exec lhci autorun
         env:
           CI: true
+          LHCI_FULL: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
 
       - name: Upload Playwright report
         if: always() && !inputs.lighthouse_only

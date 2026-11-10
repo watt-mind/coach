@@ -9,36 +9,45 @@ try {
 
 const targetBaseUrl = process.env.E2E_BASE_URL || 'http://localhost:3199'
 const isFastLocal = !process.env.CI
+// PR runs in CI audit a representative core set once per URL (~5 min). The
+// full set with 2 runs per URL took ~14 min; it still runs on manual
+// workflow_dispatch (the E2E workflow sets LHCI_FULL) and locally.
+const isFull = !process.env.CI || !!process.env.LHCI_FULL
+
+// Public pages + the main authenticated surfaces. Legal pages share one static
+// layout, and admin/secondary settings pages are low-traffic.
+const corePaths = [
+  '/',
+  '/login',
+  '/join',
+  '/pricing',
+  '/help-center',
+  '/dashboard',
+  '/calendar',
+  '/chat',
+  '/activities',
+  '/nutrition',
+  '/performance',
+  '/settings'
+]
+const extraPaths = [
+  '/works-with',
+  '/terms',
+  '/privacy',
+  '/cookies',
+  '/reports',
+  '/data',
+  '/profile/settings',
+  '/admin',
+  '/admin/stats/llm',
+  '/admin/system-messages'
+]
+const auditPaths = isFull ? [...corePaths, ...extraPaths] : corePaths
 
 module.exports = {
   ci: {
     collect: {
-      url: process.env.LHCI_URL
-        ? [process.env.LHCI_URL]
-        : [
-            `${targetBaseUrl}/`,
-            `${targetBaseUrl}/login`,
-            `${targetBaseUrl}/join`,
-            `${targetBaseUrl}/pricing`,
-            `${targetBaseUrl}/works-with`,
-            `${targetBaseUrl}/help-center`,
-            `${targetBaseUrl}/terms`,
-            `${targetBaseUrl}/privacy`,
-            `${targetBaseUrl}/cookies`,
-            `${targetBaseUrl}/dashboard`,
-            `${targetBaseUrl}/calendar`,
-            `${targetBaseUrl}/chat`,
-            `${targetBaseUrl}/activities`,
-            `${targetBaseUrl}/nutrition`,
-            `${targetBaseUrl}/performance`,
-            `${targetBaseUrl}/reports`,
-            `${targetBaseUrl}/data`,
-            `${targetBaseUrl}/settings`,
-            `${targetBaseUrl}/profile/settings`,
-            `${targetBaseUrl}/admin`,
-            `${targetBaseUrl}/admin/stats/llm`,
-            `${targetBaseUrl}/admin/system-messages`
-          ],
+      url: process.env.LHCI_URL ? [process.env.LHCI_URL] : auditPaths.map((p) => `${targetBaseUrl}${p}`),
       puppeteerScript: './e2e/scripts/lhci-auth.cjs',
       puppeteerLaunchOptions: {
         args: [
@@ -50,8 +59,8 @@ module.exports = {
           '--disable-background-networking'
         ]
       },
-      // 1 run locally for instant feedback; 2 runs in CI for statistical stability
-      numberOfRuns: isFastLocal ? 1 : 2,
+      // 2 runs for statistical stability on full CI audits; 1 elsewhere.
+      numberOfRuns: isFull && !isFastLocal ? 2 : 1,
       ...(chromePath || process.env.CHROME_PATH
         ? { chromePath: process.env.CHROME_PATH || chromePath }
         : {}),
