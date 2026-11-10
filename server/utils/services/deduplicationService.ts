@@ -532,6 +532,24 @@ export const deduplicationService = {
           }
         }
 
+        // V2 streams are independent of legacy streams and may exist alone.
+        const existingBestStreamV2 = await tx.workoutStreamV2.findUnique({
+          where: { workoutId: bestWorkout.id },
+          select: { id: true }
+        })
+        if (!existingBestStreamV2) {
+          const donorV2 = await tx.workoutStreamV2.findFirst({
+            where: { workoutId: { in: group.toDelete } },
+            select: { id: true }
+          })
+          if (donorV2) {
+            await tx.workoutStreamV2.update({
+              where: { id: donorV2.id },
+              data: { workoutId: bestWorkout.id }
+            })
+          }
+        }
+
         // 4. Exercise Transfer Logic
         // Move exercise records if primary has none
         const existingBestExercises = await tx.workoutExercise.count({

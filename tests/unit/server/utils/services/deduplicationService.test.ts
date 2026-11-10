@@ -293,6 +293,11 @@ function createTransactionDouble(liveWorkoutIds: string[]) {
         return { workoutId: data.workoutId }
       })
     },
+    workoutStreamV2: {
+      findUnique: vi.fn(async () => null),
+      findFirst: vi.fn(async () => null),
+      update: vi.fn(async () => ({}))
+    },
     workoutExercise: {
       // Zero either way, for the same cascade reason as the stream lookup.
       count: vi.fn(async () => 0),
@@ -459,6 +464,39 @@ describe('deduplicationService.mergeDuplicateGroup concurrent deletion', () => {
 
     expect(result).toEqual({ deletedCount: 0, keptCount: 0, skipped: true })
     expect(tx.workoutExercise.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('moves a V2-only donor through the transaction', async () => {
+    const { tx } = installTransactionDouble({ liveWorkoutIds: ['best-1', 'duplicate-1'] })
+    tx.workoutStreamV2.findFirst.mockResolvedValueOnce({ id: 'v2' } as never)
+    await deduplicationService.mergeDuplicateGroup(buildGroup('best-1', 'duplicate-1'))
+    expect(tx.workoutStreamV2.findFirst).toHaveBeenCalledWith({
+      where: { workoutId: { in: ['duplicate-1'] } },
+      select: { id: true }
+    })
+    expect(tx.workoutStreamV2.update).toHaveBeenCalledWith({
+      where: { id: 'v2' },
+      data: { workoutId: 'best-1' }
+    })
+    expect(tx.workoutStream.update).not.toHaveBeenCalled()
+  })
+
+  it('preserves an existing V2 destination', async () => {
+    const { tx } = installTransactionDouble({ liveWorkoutIds: ['best-1', 'duplicate-1'] })
+    tx.workoutStreamV2.findUnique.mockResolvedValueOnce({ id: 'existing' } as never)
+    await deduplicationService.mergeDuplicateGroup(buildGroup('best-1', 'duplicate-1'))
+    expect(tx.workoutStreamV2.findFirst).not.toHaveBeenCalled()
+    expect(tx.workoutStreamV2.update).not.toHaveBeenCalled()
+  })
+
+  it('propagates a failure after the V2 transfer', async () => {
+    const { tx } = installTransactionDouble({ liveWorkoutIds: ['best-1', 'duplicate-1'] })
+    tx.workoutStreamV2.findFirst.mockResolvedValueOnce({ id: 'v2' } as never)
+    tx.workoutExercise.count.mockRejectedValueOnce(new Error('later failure') as never)
+    await expect(
+      deduplicationService.mergeDuplicateGroup(buildGroup('best-1', 'duplicate-1'))
+    ).rejects.toThrow('later failure')
+    expect(tx.workoutStreamV2.update).toHaveBeenCalledOnce()
   })
 
   it('still surfaces database failures that are not a missing target row', async () => {
