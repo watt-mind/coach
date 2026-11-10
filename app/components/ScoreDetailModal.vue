@@ -67,7 +67,8 @@
                 <div class="flex items-center justify-between">
                   <span class="font-bold text-gray-900 dark:text-white">{{ section.title }}</span>
                   <UBadge
-                    :color="getStatusColor(section.status)"
+                    color="neutral"
+                    :class="getAnalysisStatusClass(section.status)"
                     variant="subtle"
                     size="xs"
                     class="font-bold"
@@ -182,7 +183,7 @@
 </template>
 
 <script setup lang="ts">
-  import { getAnalysisStatusColor } from '~/utils/analysis-status'
+  import { getAnalysisStatusClass } from '~/utils/analysis-status'
 
   interface AnalysisData {
     executive_summary?: string
@@ -249,9 +250,6 @@
   })
 
   // Status helpers
-  /** Shared with the workout, report and share surfaces (CW-424). */
-  const getStatusColor = (status?: string | null) => getAnalysisStatusColor(status)
-
   const getStatusLabel = (status: string) => {
     if (!status) return 'Unknown'
     return status
