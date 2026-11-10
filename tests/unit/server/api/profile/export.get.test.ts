@@ -78,6 +78,20 @@ describe('GET /api/profile/export', () => {
     vi.clearAllMocks()
   })
 
+  it('requires session/API-key auth (rejects OAuth bearer tokens)', async () => {
+    const handler = await getHandler()
+
+    requireAuthMock.mockResolvedValue({
+      id: 'user-1',
+      email: 'athlete@example.com'
+    })
+
+    const event = {}
+    await handler(event as any)
+
+    expect(requireAuthMock).toHaveBeenCalledWith(event, undefined, { allowOAuth: false })
+  })
+
   it('streams a JSON export bundle with download headers', async () => {
     const handler = await getHandler()
 

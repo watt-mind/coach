@@ -50,12 +50,28 @@ export async function validateOAuthToken(event: H3Event) {
   }
 }
 
+export interface RequireAuthOptions {
+  /**
+   * Whether OAuth bearer tokens are accepted. Defaults to true.
+   * Browser/internal endpoints that must not be reachable with a scoped
+   * third-party token (e.g. full account export, session minting) pass
+   * `false` so only cookie sessions and API keys authenticate.
+   */
+  allowOAuth?: boolean
+}
+
 /**
  * Unified auth guard that supports Session, API Key, and OAuth Bearer tokens.
  * @param event - H3 event
  * @param requiredScopes - Optional scopes for OAuth tokens (Sessions and API keys are assumed to have all scopes)
+ * @param options - Optional settings; `allowOAuth: false` rejects OAuth bearer
+ * tokens even when they would satisfy `requiredScopes`.
  */
-export async function requireAuth(event: H3Event, requiredScopes?: string[]) {
+export async function requireAuth(
+  event: H3Event,
+  requiredScopes?: string[],
+  options?: RequireAuthOptions
+) {
   const ensureActiveUser = (user: { deactivatedAt?: Date | null } | null) => {
     if (user?.deactivatedAt) {
       throw createError({
@@ -93,6 +109,12 @@ export async function requireAuth(event: H3Event, requiredScopes?: string[]) {
   const oauth = await validateOAuthToken(event)
   if (oauth) {
     ensureActiveUser(oauth.user)
+    if (options?.allowOAuth === false) {
+      throw createError({
+        statusCode: 403,
+        message: 'OAuth bearer tokens are not accepted on this endpoint'
+      })
+    }
     // Check scopes if required
     if (requiredScopes && requiredScopes.length > 0) {
       const hasScopes = requiredScopes.every((s) => oauth.scopes.includes(s))
