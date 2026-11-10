@@ -1219,7 +1219,8 @@
                 class="w-full"
                 value-key="value"
                 @update:model-value="
-                  (item: any) => updateProviderOption(selectedProviderKey, option, item.value)
+                  (value: any) =>
+                    updateProviderOption(selectedProviderKey, option, value?.value ?? value)
                 "
               />
             </template>
