@@ -10,6 +10,7 @@ import { nutritionRepository } from './repositories/nutritionRepository'
 import { wellnessRepository } from './repositories/wellnessRepository'
 import { calendarNoteRepository } from './repositories/calendarNoteRepository'
 import { workoutRepository } from './repositories/workoutRepository'
+import { workoutStreamRepository } from './repositories/workoutStreamRepository'
 import { applyCanonicalNutritionTargets } from './nutrition/canonical-targets'
 import { getUserNutritionSettings } from './nutrition/settings'
 import { metabolicService } from './services/metabolicService'
@@ -164,12 +165,20 @@ export async function getCalendarDataForUser(
     endDate: rangeEnd,
     orderBy: { date: 'asc' },
     include: {
-      plannedWorkout: true,
-      streams: {
-        select: { id: true }
-      }
+      plannedWorkout: true
     }
   })
+
+  // CW-379: `streams: { select: { id: true } }` used to ride along on the query
+  // above purely to drive the `hasStreams` flag below, but it only ever saw the
+  // legacy V1 table -- so the calendar showed no stream indicator at all for
+  // athletes whose series live in WorkoutStreamV2. The repository's presence
+  // probe evaluates "has usable stream data" over both tables in SQL: Postgres
+  // still reads the series to answer it, but only a boolean crosses the wire.
+  const workoutsWithStreams = await workoutStreamRepository.findManyByWorkoutIds(
+    workouts.map((w) => w.id),
+    { fields: [] }
+  )
 
   const plannedWorkouts = await prisma.plannedWorkout.findMany({
     where: {
@@ -448,7 +457,7 @@ export async function getCalendarDataForUser(
       commute: w.commute,
       isPrivate: w.isPrivate,
       gearId: w.gearId,
-      hasStreams: !!(w as any).streams,
+      hasStreams: workoutsWithStreams.has(w.id),
       plannedWorkoutId: w.plannedWorkoutId,
       linkedPlannedWorkout: (w as any).plannedWorkout
         ? {

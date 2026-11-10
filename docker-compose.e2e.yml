@@ -1,6 +1,13 @@
 # Dedicated E2E stack — isolated from local dev (Postgres 5439 / Redis 6379).
-# Always run with project name coach-e2e (see package.json scripts) so this
-# does not collide with the local docker-compose.yml stack.
+# Parallel-safe: no fixed container_names; project name and host ports are
+# parameterized so multiple stacks can run side by side on one Docker daemon.
+#   - Project name: E2E_PROJECT (package.json scripts pass -p ${E2E_PROJECT:-coach-e2e})
+#   - Ports: E2E_PORT (app, default 3199), E2E_PG_PORT (default 5440),
+#     E2E_REDIS_PORT (default 6389). The app listens on E2E_PORT inside the
+#     container too, so browser-facing URLs (auth origin, site URL) stay
+#     consistent between host and container.
+#   - App image: E2E_APP_IMAGE (default coach-e2e-app:local). CI exports a
+#     content-hashed tag so concurrent runs never race on the :local tag.
 # Usage:
 #   pnpm e2e:setup     # infra + migrate/seed + app
 #   pnpm e2e:up:infra  # Postgres + Redis only (host-run app via pnpm e2e:app:host)
@@ -9,13 +16,12 @@
 services:
   postgres-e2e:
     image: postgres:16-alpine
-    container_name: coach-postgres-e2e
     environment:
       POSTGRES_USER: watts
       POSTGRES_PASSWORD: password
       POSTGRES_DB: coach_e2e
     ports:
-      - '5440:5432'
+      - '${E2E_PG_PORT:-5440}:5432'
     volumes:
       - postgres_e2e_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,7 +32,6 @@ services:
 
   redis-e2e:
     image: docker.dragonflydb.io/dragonflydb/dragonfly
-    container_name: coach-redis-e2e
     ulimits:
       memlock: -1
     command:
@@ -37,18 +42,17 @@ services:
         '--maxmemory=512mb'
       ]
     ports:
-      - '6389:6379'
+      - '${E2E_REDIS_PORT:-6389}:6379'
 
   app-e2e:
-    image: coach-e2e-app:local
+    image: '${E2E_APP_IMAGE:-coach-e2e-app:local}'
     build:
       context: .
       dockerfile: Dockerfile.e2e
       cache_from:
         - coach-e2e-app:local
-    container_name: coach-app-e2e
     ports:
-      - '3199:3199'
+      - '${E2E_PORT:-3199}:${E2E_PORT:-3199}'
     environment:
       # In-compose service hostnames (override host-oriented .env.e2e values).
       # Quote URLs: unquoted `&` is a YAML anchor.
@@ -60,14 +64,14 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       NITRO_HOST: 0.0.0.0
-      PORT: '3199'
-      NEXTAUTH_URL: 'http://127.0.0.1:3199/api/auth'
+      PORT: '${E2E_PORT:-3199}'
+      NEXTAUTH_URL: 'http://127.0.0.1:${E2E_PORT:-3199}/api/auth'
       NEXTAUTH_SECRET: e2e-test-auth-secret-change-me-min-32-chars
       NUXT_AUTH_SECRET: e2e-test-auth-secret-change-me-min-32-chars
-      NUXT_AUTH_ORIGIN: 'http://127.0.0.1:3199/api/auth'
-      AUTH_ORIGIN: 'http://127.0.0.1:3199/api/auth'
+      NUXT_AUTH_ORIGIN: 'http://127.0.0.1:${E2E_PORT:-3199}/api/auth'
+      AUTH_ORIGIN: 'http://127.0.0.1:${E2E_PORT:-3199}/api/auth'
       AUTH_SECRET: e2e-test-auth-secret-change-me-min-32-chars
-      NUXT_PUBLIC_SITE_URL: 'http://127.0.0.1:3199/'
+      NUXT_PUBLIC_SITE_URL: 'http://127.0.0.1:${E2E_PORT:-3199}/'
       DISABLE_EMAILS: 'true'
       TOLGEE_API_ENABLED: 'false'
       NUXT_PUBLIC_SUBSCRIPTIONS_ENABLED: 'true'
@@ -97,7 +101,7 @@ services:
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:3199/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+          "fetch('http://127.0.0.1:${E2E_PORT:-3199}/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
         ]
       interval: 10s
       timeout: 5s
@@ -105,8 +109,7 @@ services:
       start_period: 40s
 
   worker-e2e:
-    image: coach-e2e-app:local
-    container_name: coach-worker-e2e
+    image: '${E2E_APP_IMAGE:-coach-e2e-app:local}'
     # Bypass `pnpm run` — the runner image has node_modules but may omit lockfile/
     # workspace metadata. pnpm 11 then tries to repair deps and aborts in non-TTY CI
     # with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY before the worker starts.
@@ -124,7 +127,7 @@ services:
       # relaunch path — which re-execs with an elevated heap limit — is a no-op here.
       NODE_OPTIONS: '--max-old-space-size=8192'
       CW_WORKER_HEALTH_PORT: '8081'
-      NUXT_PUBLIC_SITE_URL: 'http://127.0.0.1:3199/'
+      NUXT_PUBLIC_SITE_URL: 'http://127.0.0.1:${E2E_PORT:-3199}/'
       NUXT_PUBLIC_SUBSCRIPTIONS_ENABLED: 'true'
       STRIPE_SECRET_KEY: sk_test_e2e_placeholder
       NUXT_STRIPE_SECRET_KEY: sk_test_e2e_placeholder

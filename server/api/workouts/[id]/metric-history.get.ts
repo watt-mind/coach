@@ -1,4 +1,5 @@
 import { getServerSession } from '../../../utils/session'
+import { workoutStreamRepository } from '../../../utils/repositories/workoutStreamRepository'
 
 function normalizeMetricKey(metricKey: string) {
   return metricKey.trim().toLowerCase()
@@ -127,7 +128,7 @@ export default defineEventHandler(async (event) => {
     return { metricKey, activityType: null, points: [] }
   }
 
-  const candidates = await prisma.workout.findMany({
+  const candidateRecords = await prisma.workout.findMany({
     where: {
       userId: workout.userId,
       isDuplicate: false,
@@ -136,14 +137,27 @@ export default defineEventHandler(async (event) => {
       date: { lt: workout.date }
     },
     orderBy: { date: 'desc' },
-    take: limit * 3,
-    include: {
-      streams: {
-        select: {
-          extrasMeta: true
-        }
-      }
-    }
+    take: limit * 3
+  })
+
+  // CW-379: this used to `include: { streams: { select: { extrasMeta: true } } }`,
+  // which reads the legacy V1 table only -- every FIT session-summary metric
+  // (elapsed/timer time, total ascent/descent, calories, TSS) charted as an
+  // empty history for athletes whose streams are in WorkoutStreamV2.
+  //
+  // The dedicated single-column read matters here: the only consumer is
+  // getSessionSummaryValue(), which reads `streams.extrasMeta.sessionSummary`
+  // and no series at all, while this query takes `limit * 3` rows (up to 90).
+  // attachStreamsToWorkouts() would drag the mandatory V2 baseline -- six
+  // parallel per-second series per workout -- across all of them for one JSON
+  // blob. Same reasoning as findWattsByWorkoutIds().
+  const extrasMetaByWorkoutId = await workoutStreamRepository.findExtrasMetaByWorkoutIds(
+    candidateRecords.map((candidate) => candidate.id)
+  )
+
+  const candidates = candidateRecords.map((candidate) => {
+    const extrasMeta = extrasMetaByWorkoutId.get(candidate.id)
+    return { ...candidate, streams: extrasMeta == null ? null : { extrasMeta } }
   })
 
   const points = candidates

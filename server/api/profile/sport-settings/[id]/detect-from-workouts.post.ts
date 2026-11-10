@@ -1,4 +1,5 @@
 import { requireAuth } from '../../../../utils/auth-guard'
+import { attachStreamsToWorkouts } from '../../../../utils/repositories/workoutStreamRepository'
 
 const LOOKBACK_DAYS_DEFAULT = 56
 const LOOKBACK_DAYS_MAX = 180
@@ -152,7 +153,7 @@ export default defineEventHandler(async (event) => {
   fromDate.setUTCDate(fromDate.getUTCDate() - lookbackDays)
 
   const workoutTypeFilter = Array.isArray(sportSetting.types) && sportSetting.types.length > 0
-  const workouts = await prisma.workout.findMany({
+  const workoutRecords = await prisma.workout.findMany({
     where: {
       userId: user.id,
       isDuplicate: false,
@@ -166,18 +167,17 @@ export default defineEventHandler(async (event) => {
       date: true,
       type: true,
       durationSec: true,
-      maxHr: true,
-      streams: {
-        select: {
-          time: true,
-          watts: true,
-          heartrate: true,
-          velocity: true
-        }
-      }
+      maxHr: true
     },
     take: 200
   })
+
+  // CW-379: selecting the `streams` relation only reads the legacy V1 table,
+  // so FTP/LTHR/threshold-pace autodetection reported "no stream data found"
+  // for every athlete whose series are in WorkoutStreamV2.
+  // time/watts/heartrate/velocity are all in the repository's mandatory
+  // baseline, so no optional columns are pulled across 200 workouts.
+  const workouts = await attachStreamsToWorkouts(workoutRecords, { baselineOnly: true })
 
   const ftpCandidates: any[] = []
   const lthrCandidates: any[] = []

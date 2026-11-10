@@ -2,6 +2,7 @@ import { z } from 'zod/v3'
 import { requireAuth } from '../../../utils/auth-guard'
 import { assertSingleWorkoutAccess, getAccessibleWorkout } from '../../../utils/analyticsScope'
 import { prisma } from '../../../utils/db'
+import { attachStreamToWorkout } from '../../../utils/repositories/workoutStreamRepository'
 import { calculateSegmentSummary } from '../../../utils/analytics/segment-summary'
 import { computeMMP } from '../../../utils/analytics/virtual-streams'
 import {
@@ -190,7 +191,9 @@ export default defineEventHandler(async (event) => {
       })
     }
 
-    const workout = await getAccessibleWorkout(user.id, analysis.workoutId, {
+    // CW-379: `streams` reads the legacy V1 table only, so every advanced
+    // summary mode degraded to "requires stream data" for V2-only workouts.
+    const workoutRecord = await getAccessibleWorkout(user.id, analysis.workoutId, {
       select: {
         id: true,
         type: true,
@@ -201,19 +204,11 @@ export default defineEventHandler(async (event) => {
         powerHrRatio: true,
         variabilityIndex: true,
         decoupling: true,
-        workAboveFtp: true,
-        streams: {
-          select: {
-            time: true,
-            distance: true,
-            watts: true,
-            heartrate: true,
-            cadence: true,
-            velocity: true
-          }
-        }
+        workAboveFtp: true
       }
     })
+
+    const workout = workoutRecord ? await attachStreamToWorkout(workoutRecord) : null
 
     if (!workout || !workout.streams) {
       return {

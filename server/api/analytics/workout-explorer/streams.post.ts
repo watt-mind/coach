@@ -1,6 +1,7 @@
 import { z } from 'zod/v3'
 import { requireAuth } from '../../../utils/auth-guard'
 import { getAccessibleWorkout } from '../../../utils/analyticsScope'
+import { attachStreamToWorkout } from '../../../utils/repositories/workoutStreamRepository'
 import { lttb } from '../../../utils/analytics/lttb'
 import { calculateVirtualStream, type VirtualField } from '../../../utils/analytics/virtual-streams'
 import { sportSettingsRepository } from '../../../utils/repositories/sportSettingsRepository'
@@ -143,28 +144,21 @@ export default defineEventHandler(async (event) => {
 
   const { analysis } = result.data
   // 1. Fetch Workout and Streams
-  const workout = await getAccessibleWorkout(user.id, analysis.workoutId, {
+  // CW-379: `streams` selects the legacy V1 table only, so the whole workout
+  // explorer 404'd with "Workout streams not found" for athletes whose series
+  // live in WorkoutStreamV2. attachStreamToWorkout prefers V2 and falls back
+  // to V1.
+  const workoutRecord = await getAccessibleWorkout(user.id, analysis.workoutId, {
     select: {
+      id: true,
       title: true,
       date: true,
       type: true,
-      user: { select: { name: true, email: true } },
-      streams: {
-        select: {
-          time: true,
-          distance: true,
-          watts: true,
-          heartrate: true,
-          cadence: true,
-          velocity: true,
-          altitude: true,
-          grade: true,
-          latlng: true,
-          lapSplits: true
-        }
-      }
+      user: { select: { name: true, email: true } }
     }
   })
+
+  const workout = workoutRecord ? await attachStreamToWorkout(workoutRecord) : null
 
   if (!workout || !workout.streams) {
     throw createError({ statusCode: 404, statusMessage: 'Workout streams not found' })

@@ -3,6 +3,11 @@ set -e
 
 test -f .env.e2e || cp .env.e2e.example .env.e2e
 
+# Parallel-safe: project name comes from E2E_PROJECT (default coach-e2e), so
+# concurrent CI runs on one Docker daemon never touch each other's stacks.
+E2E_PROJECT="${E2E_PROJECT:-coach-e2e}"
+export E2E_PROJECT
+
 pnpm e2e:up:infra
 pnpm e2e:db:prepare
 
@@ -30,9 +35,13 @@ else
   fi
 fi
 
-if ! docker compose --env-file .env.e2e -p coach-e2e -f docker-compose.e2e.yml up -d --wait app-e2e; then
+# Run containers from the content-hashed tag, not :local — a sibling run can
+# retag :local between our build and `up`, which would swap the app under us.
+export E2E_APP_IMAGE="$IMAGE_TAG"
+
+if ! docker compose --env-file .env.e2e -p "$E2E_PROJECT" -f docker-compose.e2e.yml up -d --wait app-e2e; then
   echo "=> e2e stack failed to become healthy; dumping worker/app logs"
-  docker logs coach-worker-e2e 2>&1 || true
-  docker logs coach-app-e2e 2>&1 || true
+  docker compose --env-file .env.e2e -p "$E2E_PROJECT" -f docker-compose.e2e.yml logs worker-e2e 2>&1 || true
+  docker compose --env-file .env.e2e -p "$E2E_PROJECT" -f docker-compose.e2e.yml logs app-e2e 2>&1 || true
   exit 1
 fi

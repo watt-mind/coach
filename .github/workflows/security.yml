@@ -23,7 +23,7 @@ env:
 jobs:
   analyze:
     name: CodeQL Security Scan
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, linux-container]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -39,6 +39,11 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
+          # The shared host has 62 GB RAM / 32 CPUs, but each runner is capped
+          # at 14 GB. Keep CodeQL below the runner cgroup instead of allowing
+          # host-level auto-detection to request ~60 GB and 32 threads.
+          ram: 8192
+          threads: 4
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4

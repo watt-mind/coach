@@ -18,6 +18,89 @@ type IngestIntervalsPayload = {
   manualSync?: boolean
 }
 
+/**
+ * Prisma raises `P2025` ("An operation failed because it depends on one or more
+ * records that were required but not found") when a `where`-targeted row no
+ * longer exists. Matched by `code` rather than `instanceof` because the concrete
+ * error class differs between the query engines and is re-wrapped by the driver
+ * adapter — same duck-typing the rest of the codebase uses (see
+ * `server/api/auth/[...].ts`, `server/api/webhooks/revenuecat.post.ts`).
+ */
+function isRecordNotFoundError(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === 'P2025'
+}
+
+/**
+ * Result returned when the Intervals.icu integration row is gone.
+ *
+ * A user disconnecting the integration while a sync is in flight (or queued for
+ * retry) is expected behaviour, not a failure: throwing here would re-run the
+ * task up to `maxAttempts` more times and file an identical Sentry event on
+ * every attempt. We deliberately return a normal result rather than raising a
+ * framework-level "do not retry" signal — the self-hosted BullMQ worker does not
+ * honour `AbortTaskRunError` (CW-602), whereas a plain resolved value is
+ * terminal on every driver.
+ */
+function integrationDisconnectedResult(
+  payload: Pick<IngestIntervalsPayload, 'userId' | 'startDate' | 'endDate'>
+): IngestionResult {
+  return {
+    success: false,
+    counts: {},
+    message: 'Intervals.icu integration not found for user; it was disconnected. Skipping sync.',
+    userId: payload.userId,
+    startDate: payload.startDate,
+    endDate: payload.endDate
+  }
+}
+
+/**
+ * Writes the terminal sync status back onto the integration row.
+ *
+ * Runs from a `finally` block, so it must not throw for the ordinary
+ * disconnect race: a throw inside `finally` *replaces* whichever exception was
+ * already propagating, which is how the original ingestion error got masked by
+ * a `P2025`. Non-`P2025` failures are still surfaced when the sync itself
+ * succeeded (nothing is being masked in that case).
+ */
+async function finalizeSyncStatus(
+  integrationId: string,
+  outcome: { syncSucceeded: boolean; syncErrorMessage: string | null }
+): Promise<void> {
+  const { syncSucceeded, syncErrorMessage } = outcome
+
+  try {
+    await prisma.integration.update({
+      where: { id: integrationId },
+      data: {
+        syncStatus: syncSucceeded ? 'SUCCESS' : 'FAILED',
+        lastSyncAt: syncSucceeded ? new Date() : undefined,
+        errorMessage: syncSucceeded ? null : syncErrorMessage,
+        ...(syncSucceeded ? { initialSyncCompleted: true } : {})
+      }
+    })
+  } catch (error) {
+    if (isRecordNotFoundError(error)) {
+      logger.log(
+        'Intervals.icu integration was disconnected during sync; skipping sync-status update',
+        { integrationId }
+      )
+      return
+    }
+
+    if (!syncSucceeded) {
+      // An error from the try block is already propagating — never mask it.
+      logger.error('Failed to record Intervals.icu sync failure status', {
+        integrationId,
+        error: error instanceof Error ? error.message : String(error)
+      })
+      return
+    }
+
+    throw error
+  }
+}
+
 export async function runIngestIntervals(
   payload: IngestIntervalsPayload
 ): Promise<IngestionResult> {
@@ -36,14 +119,31 @@ export async function runIngestIntervals(
   })
 
   if (!integration) {
-    throw new Error('Intervals integration not found for user')
+    logger.log('Intervals.icu integration not found for user; skipping ingestion', {
+      userId,
+      startDate,
+      endDate
+    })
+    return integrationDisconnectedResult(payload)
   }
 
-  // Update sync status
-  await prisma.integration.update({
-    where: { id: integration.id },
-    data: { syncStatus: 'SYNCING' }
-  })
+  // Update sync status. The row can be deleted between the fetch above and this
+  // write if the user disconnects mid-flight — that is a clean skip, not a failure.
+  try {
+    await prisma.integration.update({
+      where: { id: integration.id },
+      data: { syncStatus: 'SYNCING' }
+    })
+  } catch (error) {
+    if (isRecordNotFoundError(error)) {
+      logger.log(
+        'Intervals.icu integration was disconnected before the sync started; skipping ingestion',
+        { userId, integrationId: integration.id }
+      )
+      return integrationDisconnectedResult(payload)
+    }
+    throw error
+  }
 
   let syncSucceeded = false
   let syncErrorMessage: string | null = null
@@ -142,15 +242,7 @@ export async function runIngestIntervals(
 
     throw error
   } finally {
-    await prisma.integration.update({
-      where: { id: integration.id },
-      data: {
-        syncStatus: syncSucceeded ? 'SUCCESS' : 'FAILED',
-        lastSyncAt: syncSucceeded ? new Date() : undefined,
-        errorMessage: syncSucceeded ? null : syncErrorMessage,
-        ...(syncSucceeded ? { initialSyncCompleted: true } : {})
-      }
-    })
+    await finalizeSyncStatus(integration.id, { syncSucceeded, syncErrorMessage })
   }
 }
 

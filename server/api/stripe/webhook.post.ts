@@ -254,7 +254,8 @@ export default defineEventHandler(async (event) => {
 
   // Handle the event
   try {
-    // 1. Find user for audit logging
+    // 1. Only process events for a linked Coach Watts customer. This Stripe
+    // account also sends events for products that belong to other applications.
     const customerId = (stripeEvent.data.object as any).customer as string
     let userId: string | undefined
 
@@ -264,6 +265,11 @@ export default defineEventHandler(async (event) => {
         select: { id: true }
       })
       userId = user?.id
+    }
+
+    if (!userId) {
+      console.log(`Ignoring Stripe webhook without a Coach Watts customer: ${stripeEvent.type}`)
+      return { received: true }
     }
 
     // 2. Log to AuditLog

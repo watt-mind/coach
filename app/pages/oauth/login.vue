@@ -30,6 +30,27 @@
 
         <USeparator />
 
+        <div
+          v-if="providerErrorMessage"
+          role="alert"
+          class="rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-950/30"
+        >
+          <div class="flex items-start gap-3">
+            <UIcon
+              name="i-heroicons-exclamation-circle"
+              class="mt-0.5 size-5 shrink-0 text-red-600 dark:text-red-400"
+            />
+            <div>
+              <p class="text-sm font-bold text-red-900 dark:text-red-100">
+                Sign-in could not be completed
+              </p>
+              <p class="mt-1 text-xs leading-relaxed text-red-700 dark:text-red-300">
+                {{ providerErrorMessage }}
+              </p>
+            </div>
+          </div>
+        </div>
+
         <!-- Current User (if logged in) -->
         <div v-if="status === 'authenticated' && user" class="space-y-4">
           <div
@@ -60,7 +81,7 @@
               class="font-bold"
               @click="
                 () => {
-                  void navigateTo(callbackUrl)
+                  void navigateTo(callbackUrl, { external: true })
                 }
               "
             />
@@ -168,6 +189,27 @@
   const runtimeConfig = useRuntimeConfig()
   const appleSignInEnabled = computed(() => Boolean(runtimeConfig.public.appleSignInEnabled))
 
+  const providerErrorCode = computed(() => {
+    const value = Array.isArray(route.query.error) ? route.query.error[0] : route.query.error
+    return typeof value === 'string' ? value : null
+  })
+  const providerErrorMessage = computed(() => {
+    switch (providerErrorCode.value) {
+      case 'AccessDenied':
+        return 'The provider cancelled the request. Try again or choose another provider.'
+      case 'OAuthAccountNotLinked':
+        return 'This email already belongs to another sign-in method. Choose the provider you used before.'
+      case 'OAuthSignin':
+      case 'OAuthCallback':
+      case 'OAuthCreateAccount':
+        return 'The provider could not finish the request. Try again or choose another provider.'
+      default:
+        return providerErrorCode.value
+          ? 'The provider returned an unexpected response. Try again or choose another provider.'
+          : null
+    }
+  })
+
   const user = computed(() => authData.value?.user)
   const loadingApp = ref(true)
   const loadingApple = ref(false)
@@ -228,14 +270,26 @@
     }
   }
 
-  function handleCancel() {
-    if (clientId.value) {
-      // If we have a callback URL from OAuth, we should ideally redirect back with an error
-      // But for now, just going to dashboard is safer
-      navigateTo('/dashboard')
-    } else {
-      navigateTo('/dashboard')
+  function oauthCancellationPath(): string | null {
+    try {
+      const url = new URL(callbackUrl, window.location.origin)
+      if (url.origin !== window.location.origin || url.pathname !== '/api/oauth/authorize') {
+        return null
+      }
+      url.searchParams.set('action', 'deny')
+      return `${url.pathname}${url.search}`
+    } catch {
+      return null
     }
+  }
+
+  async function handleCancel() {
+    const cancellationPath = oauthCancellationPath()
+    if (clientId.value && cancellationPath) {
+      await navigateTo(cancellationPath, { external: true })
+      return
+    }
+    await navigateTo('/dashboard')
   }
 
   onMounted(() => {

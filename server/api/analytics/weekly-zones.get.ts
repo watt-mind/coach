@@ -2,6 +2,7 @@ import { defineEventHandler, getQuery, createError } from 'h3'
 import { prisma } from '../../utils/db'
 import { userRepository } from '../../utils/repositories/userRepository'
 import { workoutRepository } from '../../utils/repositories/workoutRepository'
+import { attachStreamsToWorkouts } from '../../utils/repositories/workoutStreamRepository'
 import { sportSettingsRepository } from '../../utils/repositories/sportSettingsRepository'
 import { calculatePowerZones, calculateHrZones } from '../../utils/zones'
 import { getServerSession } from '../../utils/session'
@@ -89,24 +90,27 @@ export default defineEventHandler(async (event) => {
       : calculateHrZones(displayLthr, displayMaxHr)
 
   // 2. Get workouts with streams
-  const workouts = await workoutRepository.getForUser(userId, {
+  //
+  // CW-379: the `streams` relation is the legacy V1 table only, and stream
+  // writes have gone to WorkoutStreamV2 for a while now -- selecting it here
+  // silently returned zero zone time for every V2-only athlete. The repository
+  // reads V2 first and falls back to V1, so both generations aggregate.
+  const workoutRecords = await workoutRepository.getForUser(userId, {
     startDate,
     endDate,
     tags,
     where: sport ? { type: sport } : undefined,
     select: {
+      id: true,
       date: true,
       ftp: true,
-      type: true, // Needed for sport matching
-      streams: {
-        select: {
-          time: true,
-          watts: true,
-          heartrate: true
-        }
-      }
+      type: true // Needed for sport matching
     }
   })
+
+  // Only time/watts/heartrate are read below, all of which are in the
+  // repository's mandatory baseline -- no optional columns needed.
+  const workouts = await attachStreamsToWorkouts(workoutRecords, { baselineOnly: true })
 
   // 3. Initialize buckets
   const weeklyData = new Map<

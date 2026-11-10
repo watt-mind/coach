@@ -25,9 +25,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
 
+# Per-PR only: a new push supersedes that PR's in-flight run. Runs for
+# different PRs (and manual dispatches) execute in parallel — the stack is
+# parallel-safe via per-run compose project names and ports (CW-666).
 concurrency:
-  group: e2e-mac-mini
-  cancel-in-progress: false
+  group: e2e-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -58,7 +61,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
 
@@ -66,6 +69,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version-file: '.nvmrc'
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -73,20 +77,43 @@ jobs:
       - name: Prepare Nuxt
         run: pnpm exec nuxt prepare
 
-      - name: Prepare e2e env
+      # Per-run compose project + host ports so concurrent runs on one Docker
+      # daemon never collide (CW-666). Ports land in .env.e2e because Playwright
+      # and prepare-db load it with dotenv override:true (it beats process env),
+      # and compose interpolates it via --env-file.
+      - name: Prepare e2e env (per-run project + ports)
         run: |
-          cp .env.e2e.example .env.e2e
+          E2E_PROJECT="coach-e2e-${GITHUB_RUN_ID}"
+          PORT_BASE=$(( 10000 + (GITHUB_RUN_ID % 5000) * 4 ))
+          E2E_PORT="$PORT_BASE"
+          E2E_PG_PORT=$(( PORT_BASE + 1 ))
+          E2E_REDIS_PORT=$(( PORT_BASE + 2 ))
+          sed -e "s/3199/${E2E_PORT}/g" \
+              -e "s/5440/${E2E_PG_PORT}/g" \
+              -e "s/6389/${E2E_REDIS_PORT}/g" \
+              .env.e2e.example > .env.e2e
+          {
+            echo ""
+            echo "# Per-run host ports for docker-compose.e2e.yml interpolation (CI)"
+            echo "E2E_PG_PORT=${E2E_PG_PORT}"
+            echo "E2E_REDIS_PORT=${E2E_REDIS_PORT}"
+          } >> .env.e2e
+          {
+            echo "E2E_PROJECT=${E2E_PROJECT}"
+            echo "E2E_PORT=${E2E_PORT}"
+            echo "E2E_PG_PORT=${E2E_PG_PORT}"
+            echo "E2E_REDIS_PORT=${E2E_REDIS_PORT}"
+            echo "E2E_BASE_URL=http://127.0.0.1:${E2E_PORT}"
+          } >> "$GITHUB_ENV"
+          echo "Per-run stack: project=${E2E_PROJECT} app=${E2E_PORT} pg=${E2E_PG_PORT} redis=${E2E_REDIS_PORT}"
 
-      - name: Free e2e ports / previous stack
-        run: |
-          pnpm e2e:down || true
-          if lsof -tiTCP:3199 -sTCP:LISTEN >/dev/null 2>&1; then
-            lsof -tiTCP:3199 -sTCP:LISTEN | xargs kill || true
-            sleep 2
-          fi
+      # Only this run's project — never kill listeners or other projects' stacks;
+      # sibling runs may be mid-flight on the same host.
+      - name: Pre-clean this run's stack
+        run: pnpm e2e:down || true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Build and start Docker e2e stack
         run: pnpm e2e:setup
@@ -94,9 +121,9 @@ jobs:
       - name: Dump e2e container logs on setup failure
         if: failure()
         run: |
-          docker logs coach-worker-e2e 2>&1 || true
-          docker logs coach-app-e2e 2>&1 || true
-          docker compose --env-file .env.e2e -p coach-e2e -f docker-compose.e2e.yml ps || true
+          docker compose --env-file .env.e2e -p "$E2E_PROJECT" -f docker-compose.e2e.yml logs worker-e2e 2>&1 || true
+          docker compose --env-file .env.e2e -p "$E2E_PROJECT" -f docker-compose.e2e.yml logs app-e2e 2>&1 || true
+          docker compose --env-file .env.e2e -p "$E2E_PROJECT" -f docker-compose.e2e.yml ps || true
 
       - name: Cache Playwright Chromium
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -121,10 +148,11 @@ jobs:
           inputs.with_lighthouse == true ||
           inputs.lighthouse_only == true ||
           contains(github.event.pull_request.labels.*.name, 'run-lighthouse')
+        # E2E_BASE_URL comes from the per-run env (GITHUB_ENV) set in
+        # "Prepare e2e env" — lighthouserc.cjs reads it from process env.
         run: pnpm e2e:lighthouse
         env:
           CI: true
-          E2E_BASE_URL: 'http://localhost:3199'
 
       - name: Upload Playwright report
         if: always() && !inputs.lighthouse_only
@@ -146,6 +174,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # down -v: remove this run's containers, networks, AND volumes — per-run
+      # projects would otherwise leak a postgres volume per run.
       - name: Tear down e2e stack
         if: always()
-        run: command -v pnpm >/dev/null 2>&1 && pnpm e2e:down || true
+        run: command -v pnpm >/dev/null 2>&1 && pnpm e2e:down:wipe || true

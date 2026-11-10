@@ -32,6 +32,11 @@ export function buildWorkoutImageCacheKey(input: CacheKeyInput) {
     averageHr: input.workout.averageHr ?? null,
     averageWatts: input.workout.averageWatts ?? null,
     averageSpeed: input.workout.averageSpeed ?? null,
+    // CW-379: not a Prisma read -- `input.workout` is an already-hydrated
+    // object, and its only producer (server/api/share/workouts/[token]/image.get.ts)
+    // builds it with attachStreamToWorkout(), so these series already come from
+    // WorkoutStreamV2 with the legacy V1 fallback. Left as a plain property
+    // read by design; changing it would just re-fetch what the caller has.
     streams: {
       latlng: input.workout.streams?.latlng ?? null,
       heartrate: input.workout.streams?.heartrate ?? null

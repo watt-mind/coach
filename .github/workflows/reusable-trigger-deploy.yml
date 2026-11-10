@@ -45,8 +45,10 @@ on:
 jobs:
   deploy:
     name: Deploy Trigger.dev Tasks
-    # Keep Trigger deploys on the Linux self-hosted runner pool.
-    runs-on: [self-hosted, Linux]
+    # Pin to the `shadow` build pool, same reasoning as deploy.yml (CW-608): the
+    # generic `[self-hosted, Linux]` also matches the `watt-mind-lab-smoke-*`
+    # pool, which is sized for curl/smoke checks and starves under a real build.
+    runs-on: [self-hosted, linux-vm]
     timeout-minutes: 30
     environment: ${{ inputs.environment }}
     # Job-level (not workflow-level) so the group stays distinct from the caller's
@@ -64,7 +66,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
 
@@ -72,6 +74,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version-file: '.nvmrc'
+          cache: 'pnpm'
 
       - name: Install dependencies
         run: |

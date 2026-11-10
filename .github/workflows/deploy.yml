@@ -24,9 +24,17 @@ jobs:
   build-and-deploy:
     name: Build and Deploy
     needs: ci
-    # Pin to Linux self-hosted runner pool. Bare `self-hosted` can also match
-    # `mac-mini`, which fails GHCR push with anonymous-token 403.
-    runs-on: [self-hosted, Linux]
+    # Pin to the `shadow` build pool (`watt-mind-shadow-1..4`) — NOT the generic
+    # `[self-hosted, Linux]`, which also matches `watt-mind-lab-smoke-1..6`. Those
+    # are 4 vCPU / 15 GB smoke-check boxes with no swap and no Docker cleanup; a
+    # `nuxt build` there starves the host and hangs (CW-608, 2026-08-12: a ~5-min
+    # build ran 45+ min on `lab-smoke-4` and never finished). Combined with the
+    # `cancel-in-progress: false` concurrency group above, one such hang blocks
+    # every subsequent deploy on the branch until someone cancels it by hand.
+    # `docker` is not a sufficient label either — it matches lab-1/lab-2/web-1.
+    # `shadow` matches the build pool exactly. Bare `self-hosted` would also match
+    # `mac-mini`, which fails GHCR push with an anonymous-token 403.
+    runs-on: [self-hosted, linux-vm]
     timeout-minutes: 60
     # NOTE (CW-129): this must be the environment that actually has
     # DOKPLOY_WEBHOOK_URL configured (Settings > Environments). Environment
@@ -41,13 +49,18 @@ jobs:
     env:
       DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      # docker/build-push-action otherwise uploads a `.dockerbuild` build record
+      # as a workflow artifact on every deploy. Nothing reads them, and they
+      # consume the same shared storage pool as packages (CW-711).
+      DOCKER_BUILD_RECORD_UPLOAD: 'false'
+      DOCKER_BUILD_SUMMARY: 'false'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
         with:
           name: coach
           keep-state: true
@@ -75,6 +88,11 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # Each attestation is an extra GHCR package version attached to the
+          # tag, so buildx's defaults stored 3 versions per deploy instead of
+          # 1. Nothing here consumes provenance or SBOM (CW-711).
+          provenance: false
+          sbom: false
           build-args: |
             COMMIT_SHA=${{ github.sha }}
             SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}

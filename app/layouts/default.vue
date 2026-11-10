@@ -1430,7 +1430,7 @@
       <AiQuickCapture />
       <DashboardTriggerMonitor v-model="showTriggerMonitor" />
       <ImpersonationBanner />
-      <CoachingBanner />
+      <!-- CoachingBanner is mounted once in app/app.vue (CW-541) -->
     </ClientOnly>
   </UDashboardGroup>
 </template>

@@ -1,6 +1,7 @@
 import { z } from 'zod/v3'
 import { requireAuth } from '../../../utils/auth-guard'
 import { getAccessibleWorkout } from '../../../utils/analyticsScope'
+import { attachStreamToWorkout } from '../../../utils/repositories/workoutStreamRepository'
 
 const schema = z.object({
   analysis: z.object({
@@ -47,22 +48,23 @@ export default defineEventHandler(async (event) => {
   }
 
   const analysis = result.data.analysis
-  const workout = await getAccessibleWorkout(user.id, analysis.workoutId, {
+  // CW-379: `streams` is the legacy V1 relation only -- V2-only workouts fell
+  // through to "no comparable lap data". attachStreamToWorkout reads V2 first
+  // and falls back to V1.
+  const workoutRecord = await getAccessibleWorkout(user.id, analysis.workoutId, {
     select: {
+      id: true,
       title: true,
       date: true,
-      user: { select: { name: true, email: true } },
-      streams: {
-        select: {
-          lapSplits: true
-        }
-      }
+      user: { select: { name: true, email: true } }
     }
   })
 
-  if (!workout) {
+  if (!workoutRecord) {
     throw createError({ statusCode: 404, statusMessage: 'Workout not found' })
   }
+
+  const workout = await attachStreamToWorkout(workoutRecord)
 
   const splits = toLapArray(workout.streams?.lapSplits)
   if (splits.length === 0) {

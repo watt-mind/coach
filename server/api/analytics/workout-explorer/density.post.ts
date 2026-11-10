@@ -1,6 +1,7 @@
 import { z } from 'zod/v3'
 import { requireAuth } from '../../../utils/auth-guard'
 import { getAccessibleWorkout } from '../../../utils/analyticsScope'
+import { attachStreamToWorkout } from '../../../utils/repositories/workoutStreamRepository'
 
 const schema = z.object({
   analysis: z.object({
@@ -62,21 +63,13 @@ export default defineEventHandler(async (event) => {
   }
 
   const { analysis } = result.data
-  const workout = await getAccessibleWorkout(user.id, analysis.workoutId, {
-    select: {
-      streams: {
-        select: {
-          time: true,
-          distance: true,
-          watts: true,
-          cadence: true,
-          heartrate: true,
-          velocity: true,
-          grade: true
-        }
-      }
-    }
+  // CW-379: `streams` is the legacy V1 relation only -- the density heatmap
+  // 404'd for every athlete whose series are in WorkoutStreamV2.
+  const workoutRecord = await getAccessibleWorkout(user.id, analysis.workoutId, {
+    select: { id: true }
   })
+
+  const workout = workoutRecord ? await attachStreamToWorkout(workoutRecord) : null
 
   if (!workout || !workout.streams) {
     throw createError({ statusCode: 404, statusMessage: 'Workout streams not found' })

@@ -249,6 +249,23 @@ export interface FindManyByWorkoutIdsOptions {
    * `fields: []` if you intend to read anything off the returned stream.
    */
   fields?: readonly WorkoutStreamOptionalField[]
+
+  /**
+   * Fetch exactly the mandatory baseline (REQUIRED_V2_SELECT/REQUIRED_V1_SELECT)
+   * and nothing else.
+   *
+   * `fields` alone cannot express this: `undefined` means "every column" and
+   * `[]` is already taken by the presence-only path, so a caller that reads
+   * only baseline series -- `time`/`heartrate`/`watts`/`velocity`/`latlng` and
+   * the two zone-time blobs -- previously had to either haul every column or
+   * name a throwaway optional field to get a lean select. Several CW-379 call
+   * sites (weekly zone aggregation, FTP/LTHR autodetection, the team
+   * power-duration preset) are exactly that shape, over hundreds of workouts.
+   *
+   * Takes precedence over `fields`, and never routes to the presence path --
+   * the returned streams carry real series data.
+   */
+  baselineOnly?: boolean
 }
 
 /**
@@ -737,12 +754,16 @@ export const workoutStreamRepository = {
     const result = new Map<string, NormalizedStream>()
     if (workoutIds.length === 0) return result
 
-    const fields = options?.fields
+    // `baselineOnly` wins over `fields`: it means "the mandatory baseline and
+    // nothing else", which is an empty optional-field list that must *not* be
+    // read as the presence-only sentinel below.
+    const baselineOnly = options?.baselineOnly === true
+    const fields = baselineOnly ? [] : options?.fields
 
     // `fields: []` == "does this workout have usable streams at all?". Answer
     // it in SQL instead of hauling six per-second arrays per workout across
     // the wire (CW-296).
-    if (fields !== undefined && fields.length === 0) {
+    if (!baselineOnly && fields !== undefined && fields.length === 0) {
       return findStreamPresenceByWorkoutIds(workoutIds)
     }
 
@@ -847,6 +868,66 @@ export const workoutStreamRepository = {
     for (const record of v1Chunks.flat() as Array<{ workoutId: string; watts: unknown }>) {
       if (Array.isArray(record.watts) && record.watts.length > 0) {
         result.set(record.workoutId, record.watts as number[])
+      }
+    }
+
+    return result
+  },
+
+  /**
+   * `extrasMeta`-only bulk read, for the same reason findWattsByWorkoutIds()
+   * exists.
+   *
+   * findManyByWorkoutIds() always fetches the REQUIRED_V2_SELECT baseline so
+   * hasUsableStreamData() can decide V2-vs-V1, which means ~6 parallel series
+   * per workout even when the caller wants a single JSON blob. The FIT
+   * session-summary metric history asks for `extrasMeta` across up to 90
+   * workouts at once and reads no series at all, so the baseline would be the
+   * entire cost -- roughly two million decoded numbers per modal open for a
+   * rider with 1 Hz hour-long files.
+   *
+   * This reads one JSON column and decides the V1 fallback from the presence
+   * of a non-null `extrasMeta`, which is the only signal that matters here.
+   * Workouts with no extras metadata are simply absent from the returned map.
+   */
+  async findExtrasMetaByWorkoutIds(workoutIds: string[]): Promise<Map<string, unknown>> {
+    const result = new Map<string, unknown>()
+    if (workoutIds.length === 0) return result
+
+    const chunks = chunkArray(workoutIds, WORKOUT_ID_CHUNK_SIZE)
+
+    const v2Chunks = await Promise.all(
+      chunks.map((chunk) =>
+        readV2Chunk(chunk, { workoutId: true, extrasMeta: true }, 'findExtrasMetaByWorkoutIds')
+      )
+    )
+
+    for (const record of v2Chunks.flat() as Array<{ workoutId: string; extrasMeta: unknown }>) {
+      if (record.extrasMeta != null) {
+        result.set(record.workoutId, record.extrasMeta)
+      }
+    }
+
+    const missingIds = workoutIds.filter((id) => !result.has(id))
+    if (missingIds.length === 0) return result
+
+    const v1Chunks = await Promise.all(
+      chunkArray(missingIds, WORKOUT_ID_CHUNK_SIZE).map((chunk) =>
+        prisma.workoutStream
+          .findMany({
+            where: { workoutId: { in: chunk } },
+            select: { workoutId: true, extrasMeta: true }
+          })
+          .catch((error) => {
+            logStreamReadFailure('findExtrasMetaByWorkoutIds', 'WorkoutStream', chunk, error)
+            return []
+          })
+      )
+    )
+
+    for (const record of v1Chunks.flat() as Array<{ workoutId: string; extrasMeta: unknown }>) {
+      if (record.extrasMeta != null) {
+        result.set(record.workoutId, record.extrasMeta)
       }
     }
 

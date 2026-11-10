@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { prisma } from '../db'
 import {
@@ -226,6 +229,91 @@ describe('findManyByWorkoutIds', () => {
   })
 })
 
+describe('findManyByWorkoutIds baselineOnly (CW-379)', () => {
+  it('selects the mandatory baseline and no optional columns', async () => {
+    db.workoutStreamV2.findMany.mockResolvedValue([repairedRow('good-1')])
+
+    const streams = await workoutStreamRepository.findManyByWorkoutIds(['good-1'], {
+      baselineOnly: true
+    })
+
+    const select = db.workoutStreamV2.findMany.mock.calls[0]?.[0].select
+    expect(select).toBeDefined()
+    // The baseline hasUsableStreamData() needs, and nothing beyond it.
+    expect(Object.keys(select).sort()).toEqual(
+      [
+        'createdAt',
+        'heartrate',
+        'hrZoneTimes',
+        'id',
+        'lat',
+        'lng',
+        'powerZoneTimes',
+        'time',
+        'updatedAt',
+        'velocity',
+        'watts',
+        'workoutId'
+      ].sort()
+    )
+    expect(select.cadence).toBeUndefined()
+    expect(select.lapSplits).toBeUndefined()
+
+    // Real series come back -- this is not the presence-only path.
+    expect(streams.get('good-1')?.watts).toEqual([200, 0, 210])
+    expect(db.$queryRaw).not.toHaveBeenCalled()
+  })
+
+  it('does not fall into the presence-only path that `fields: []` triggers', async () => {
+    db.workoutStreamV2.findMany.mockResolvedValue([repairedRow('good-1')])
+
+    await workoutStreamRepository.findManyByWorkoutIds(['good-1'], { baselineOnly: true })
+
+    // The presence probe is raw SQL and never touches the typed client.
+    expect(db.workoutStreamV2.findMany).toHaveBeenCalledTimes(1)
+  })
+
+  it('still falls back to the legacy V1 table when V2 has no usable data', async () => {
+    db.workoutStreamV2.findMany.mockResolvedValue([])
+    db.workoutStream.findMany.mockResolvedValue([
+      {
+        id: 'v1-1',
+        workoutId: 'good-1',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        time: [0, 1, 2],
+        heartrate: [130, 131, 132],
+        watts: [180, 185, 190],
+        velocity: null,
+        latlng: null,
+        hrZoneTimes: null,
+        powerZoneTimes: null
+      }
+    ])
+
+    const streams = await workoutStreamRepository.findManyByWorkoutIds(['good-1'], {
+      baselineOnly: true
+    })
+
+    expect(streams.get('good-1')?.watts).toEqual([180, 185, 190])
+    const v1Select = db.workoutStream.findMany.mock.calls[0]?.[0].select
+    expect(v1Select.latlng).toBe(true)
+    expect(v1Select.cadence).toBeUndefined()
+  })
+
+  it('takes precedence over an explicit `fields: []`', async () => {
+    db.workoutStreamV2.findMany.mockResolvedValue([repairedRow('good-1')])
+
+    const streams = await workoutStreamRepository.findManyByWorkoutIds(['good-1'], {
+      baselineOnly: true,
+      fields: []
+    })
+
+    expect(streams.get('good-1')?.time).toEqual([0, 1, 2])
+    expect(db.$queryRaw).not.toHaveBeenCalled()
+  })
+})
+
 describe('findWattsByWorkoutIds', () => {
   it('recovers watts from a row with NULL elements', async () => {
     db.workoutStreamV2.findMany.mockRejectedValue(decodeError('watts[41]'))
@@ -234,6 +322,57 @@ describe('findWattsByWorkoutIds', () => {
     const watts = await workoutStreamRepository.findWattsByWorkoutIds(['workout-1'])
 
     expect(watts.get('workout-1')).toEqual([250, 0, 260])
+  })
+})
+
+describe('findExtrasMetaByWorkoutIds (CW-379)', () => {
+  const sessionSummary = { sessionSummary: { totalAscent: 320, totalCalories: 640 } }
+
+  it('reads one column and never the baseline series', async () => {
+    db.workoutStreamV2.findMany.mockResolvedValue([
+      { workoutId: 'good-1', extrasMeta: sessionSummary }
+    ])
+
+    const extras = await workoutStreamRepository.findExtrasMetaByWorkoutIds(['good-1'])
+
+    expect(extras.get('good-1')).toEqual(sessionSummary)
+    // The whole point: no time/heartrate/watts/velocity/lat/lng for a JSON blob.
+    expect(db.workoutStreamV2.findMany.mock.calls[0]?.[0].select).toEqual({
+      workoutId: true,
+      extrasMeta: true
+    })
+  })
+
+  it('falls back to the legacy V1 table when V2 has no extras metadata', async () => {
+    db.workoutStreamV2.findMany.mockResolvedValue([{ workoutId: 'good-1', extrasMeta: null }])
+    db.workoutStream.findMany.mockResolvedValue([
+      { workoutId: 'good-1', extrasMeta: sessionSummary }
+    ])
+
+    const extras = await workoutStreamRepository.findExtrasMetaByWorkoutIds(['good-1'])
+
+    expect(extras.get('good-1')).toEqual(sessionSummary)
+    expect(db.workoutStream.findMany.mock.calls[0]?.[0].select).toEqual({
+      workoutId: true,
+      extrasMeta: true
+    })
+  })
+
+  it('omits workouts that have no extras metadata in either table', async () => {
+    db.workoutStreamV2.findMany.mockResolvedValue([{ workoutId: 'good-1', extrasMeta: null }])
+
+    const extras = await workoutStreamRepository.findExtrasMetaByWorkoutIds(['good-1', 'missing-1'])
+
+    expect(extras.size).toBe(0)
+  })
+
+  it('recovers extras metadata from a row the typed client cannot decode', async () => {
+    db.workoutStreamV2.findMany.mockRejectedValue(decodeError('cadence[593]'))
+    db.$queryRaw.mockResolvedValue([{ workoutId: 'bad-1', extrasMeta: sessionSummary }])
+
+    const extras = await workoutStreamRepository.findExtrasMetaByWorkoutIds(['bad-1'])
+
+    expect(extras.get('bad-1')).toEqual(sessionSummary)
   })
 })
 
@@ -279,5 +418,224 @@ describe('upsert write guard', () => {
       '[workoutStreamRepository] blocked NULL element in stream write',
       expect.objectContaining({ workoutId: 'workout-1', column: 'cadence', index: 1 })
     )
+  })
+})
+
+/* ------------------------------------------------------------------------- *
+ * CW-379 regression guard: no new raw `streams` relation reads under server/
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Blank out `//` and block comments so the scan below never trips over prose.
+ *
+ * Several of the CW-379 migrations quote the raw read they replaced (`this
+ * used to be streams: { select: { id: true } }`), which is exactly the string
+ * the detector looks for -- and a naive strip would also mangle `https://` in
+ * a string literal. This walks the source instead, tracking string/template
+ * state, and replaces comment bodies with spaces so offsets stay intact.
+ */
+function stripComments(source: string): string {
+  const out: string[] = []
+  let i = 0
+  let quote: string | null = null
+
+  while (i < source.length) {
+    const char = source[i]!
+    const next = source[i + 1]
+
+    if (quote) {
+      if (char === '\\') {
+        out.push(char, source[i + 1] ?? '')
+        i += 2
+        continue
+      }
+      if (char === quote) quote = null
+      out.push(char)
+      i++
+      continue
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      out.push(char)
+      i++
+      continue
+    }
+
+    if (char === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') {
+        out.push(' ')
+        i++
+      }
+      continue
+    }
+
+    if (char === '/' && next === '*') {
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
+        out.push(source[i] === '\n' ? '\n' : ' ')
+        i++
+      }
+      out.push(' ', ' ')
+      i += 2
+      continue
+    }
+
+    out.push(char)
+    i++
+  }
+
+  return out.join('')
+}
+
+/**
+ * A Prisma read of the **legacy V1** `streams` relation: `streams: true`, or
+ * `streams: { select|include|omit|where ... }` inside an `include`/`select`
+ * block.
+ *
+ * Deliberately narrow. It must not fire on the things that legitimately spell
+ * `streams:` -- the correct existence filter `streams: { isNot: null }`, the
+ * BullMQ queue snapshot in worker-monitoring.ts, plain property assignment
+ * (`streams: workout.streams`, `streams: null`), or a type annotation.
+ */
+const RAW_STREAMS_RELATION_READ = /\bstreams\s*:\s*(?:true\b|\{\s*(?:select|include|omit|where)\b)/g
+
+/**
+ * The same bug with a different spelling: going at the legacy V1 table through
+ * the Prisma client directly instead of the relation. There are none of these
+ * under `server/` today outside the repository itself, but `prisma.workoutStream
+ * .findMany({ where: { workoutId: ... } })` would reintroduce exactly the
+ * V2-blind read the relation pattern above was doing.
+ *
+ * The repository is the one place that is *supposed* to touch both tables, so
+ * it is exempt (see REPOSITORY_SOURCE below).
+ */
+const DIRECT_V1_CLIENT_READ = /\bprisma\s*(?:as\s+any\s*\)?\s*)?\.\s*workoutStream\s*\./g
+
+/** The repository itself -- the intended owner of both tables' reads. */
+const REPOSITORY_SOURCE = 'server/utils/repositories/workoutStreamRepository.ts'
+
+/**
+ * Files still reading the V1 relation directly, each with the reason it is not
+ * fixed here. Every entry is a real bug of the CW-379 class (V2-only athletes
+ * silently get no data) that falls **outside this ticket's Owned Paths** and is
+ * filed separately -- not an approved exception.
+ *
+ * The test below asserts this list is exhaustive *and* that every entry still
+ * violates, so fixing one forces its removal rather than letting the allowlist
+ * rot into a permanent exemption.
+ */
+const KNOWN_UNMIGRATED = new Map<string, string>([
+  [
+    'server/api/performance/ftp-evolution.get.ts',
+    'Two `include: { streams: { select: { watts: true } } }` reads in the FTP estimation and validation queries. Outside CW-379 Owned Paths.'
+  ],
+  [
+    'server/utils/services/deduplicationService.ts',
+    'mergeDuplicateGroup() existence check `streams: { select: { id: true } }`; needs an OR filter over streams/streamsV2. Outside CW-379 Owned Paths.'
+  ],
+  [
+    'server/utils/services/checkin-service.ts',
+    'Daily check-in reads hrZoneTimes/powerZoneTimes off the V1 relation. Outside CW-379 Owned Paths.'
+  ],
+  [
+    'server/utils/workout-insight-email.ts',
+    'Insight email selects the full V1 series set for its charts. Outside CW-379 Owned Paths.'
+  ]
+])
+
+const SERVER_DIR = fileURLToPath(new URL('../..', import.meta.url))
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
+
+function collectServerSources(dir: string, found: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules') continue
+      collectServerSources(full, found)
+      continue
+    }
+    if (!entry.name.endsWith('.ts')) continue
+    if (entry.name.endsWith('.test.ts')) continue
+    found.push(full)
+  }
+  return found
+}
+
+function matches(pattern: RegExp, source: string): boolean {
+  pattern.lastIndex = 0
+  const hit = pattern.test(source)
+  pattern.lastIndex = 0
+  return hit
+}
+
+function findRawStreamReads(): string[] {
+  const offenders: string[] = []
+  for (const file of collectServerSources(SERVER_DIR)) {
+    const path = relative(REPO_ROOT, file)
+    const source = stripComments(readFileSync(file, 'utf8'))
+
+    if (matches(RAW_STREAMS_RELATION_READ, source)) {
+      offenders.push(path)
+      continue
+    }
+    if (path !== REPOSITORY_SOURCE && matches(DIRECT_V1_CLIENT_READ, source)) {
+      offenders.push(path)
+    }
+  }
+  return offenders.sort()
+}
+
+describe('no raw V1 `streams` relation reads under server/ (CW-379)', () => {
+  it('detects the raw read shapes and ignores the legitimate ones', () => {
+    const flagged = (source: string) =>
+      matches(RAW_STREAMS_RELATION_READ, stripComments(source)) ||
+      matches(DIRECT_V1_CLIENT_READ, stripComments(source))
+
+    // Positive controls -- exactly the bug this ticket swept up.
+    expect(flagged('select: { id: true, streams: { select: { watts: true } } }')).toBe(true)
+    expect(flagged('include: {\n  streams: {\n    select: { lapSplits: true }\n  }\n}')).toBe(true)
+    expect(flagged('include: { streams: true }')).toBe(true)
+    expect(flagged('include: { streams: { omit: { latlng: true } } }')).toBe(true)
+    expect(flagged('include: { streams: { where: { id: { not: null } } } }')).toBe(true)
+    // Same bug, different spelling: the V1 table straight off the client.
+    expect(flagged('await prisma.workoutStream.findMany({ where: { workoutId } })')).toBe(true)
+    expect(flagged('(prisma as any).workoutStream.findUnique({ where: { workoutId } })')).toBe(true)
+
+    // Negative controls -- these must never fail a build.
+    expect(flagged('OR: [{ streams: { isNot: null } }, { streamsV2: { isNot: null } }]')).toBe(
+      false
+    )
+    expect(flagged('return { ...workout, streams }')).toBe(false)
+    expect(flagged('streams: workout.streams')).toBe(false)
+    expect(flagged('streams: QueueCounts & { workers: number }')).toBe(false)
+    expect(flagged('streamsV2: { select: { watts: true } }')).toBe(false)
+    // V2 straight off the client is a different (non-V1-blind) concern.
+    expect(flagged('(prisma as any).workoutStreamV2.findMany({})')).toBe(false)
+    // A migration comment quoting the read it removed is prose, not a read.
+    expect(flagged('// this used to be streams: { select: { id: true } }')).toBe(false)
+    expect(flagged('/* streams: { include: { x: true } } */')).toBe(false)
+  })
+
+  it('flags no file outside the documented, separately-filed backlog', () => {
+    const unexpected = findRawStreamReads().filter((file) => !KNOWN_UNMIGRATED.has(file))
+
+    expect(
+      unexpected,
+      'Stream writes go to WorkoutStreamV2 only. Reading the `streams` relation -- or the ' +
+        '`workoutStream` model off the Prisma client -- sees the legacy V1 table alone, so it ' +
+        'silently returns nothing for V2-only athletes (CW-377/CW-379). Read through ' +
+        'workoutStreamRepository / attachStreamToWorkout / attachStreamsToWorkouts, or for a pure ' +
+        'existence check use `OR: [{ streams: { isNot: null } }, { streamsV2: { isNot: null } }]`.'
+    ).toEqual([])
+  })
+
+  it('keeps the allowlist honest: no entry that no longer violates', () => {
+    const offenders = new Set(findRawStreamReads())
+    const stale = [...KNOWN_UNMIGRATED.keys()].filter((file) => !offenders.has(file))
+
+    expect(
+      stale,
+      'These files no longer read the V1 relation -- drop them from KNOWN_UNMIGRATED.'
+    ).toEqual([])
   })
 })

@@ -74,7 +74,7 @@
           </div>
         </div>
 
-        <CoachingBanner />
+        <!-- CoachingBanner is mounted once in app/app.vue (CW-541) -->
 
         <!-- Loading State -->
         <div v-if="loading" class="grid grid-cols-1 lg:grid-cols-3 gap-0 lg:gap-8 px-0">

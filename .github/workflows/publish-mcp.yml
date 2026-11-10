@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: [self-hosted, shadow]
+    runs-on: [self-hosted, linux-container]
     timeout-minutes: 15
     environment: mcp-registry-publish
     permissions:

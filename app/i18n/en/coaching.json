@@ -243,5 +243,15 @@
   "group_delete": "Delete Group",
   "group_remove_member": "Remove from group",
   "team_detail_remove_member": "Remove from team",
-  "team_detail_revoke_invite": "Revoke invite"
+  "team_detail_revoke_invite": "Revoke invite",
+  "athlete_card_act_as": "View as",
+  "athlete_card_act_as_aria": "View the app as {name}",
+  "act_as_confirm_title": "View the app as {name}?",
+  "act_as_confirm_description": "You will browse Coach Watts with {name}'s data and permissions instead of your own.",
+  "act_as_confirm_point_view": "You see what {name} sees — their dashboard, plans and activities.",
+  "act_as_confirm_point_persists": "It stays on until you exit — including after a reload or a new tab.",
+  "act_as_confirm_point_exit": "Exit any time from the banner at the bottom of the screen.",
+  "act_as_confirm_cancel": "Cancel",
+  "act_as_confirm_submit": "View as {name}",
+  "act_as_exit_aria": "Stop viewing as {name} and return to your own account"
 }

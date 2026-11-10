@@ -51,3 +51,16 @@ Apple uses `allowDangerousEmailAccountLinking: true` (same as Google). Stable id
 ## App Review
 
 There is **no** Coach Watts-native password. ASC Sign-In Information should hold a **dedicated Google** (or Apple ID) demo account. Notes must say: Safari → Sign in with Apple or Google → return via `coachwatts://oauth/callback`.
+
+### Failure and cancellation smoke
+
+Before a mobile store submission, verify all of these against the hosted IdP:
+
+1. New Apple identity creates an account and returns to the mobile callback.
+2. Returning Apple identity reaches the same Coach Watts user when Apple omits name/email.
+3. Hide My Email creates a relay identity that can sign in again.
+4. Cancelling the Apple sheet returns to `/oauth/login` with safe retry/alternate-provider copy.
+5. Cancelling `/oauth/login` itself returns `error=access_denied` plus the original OAuth `state` to the registered mobile redirect.
+6. A provider callback failure shows safe recovery copy and does not expose Auth.js or Apple configuration details.
+
+The mobile and hosted UI may record only stable stages/error codes. Never log the provider response, email, authorization code, OAuth state, PKCE challenge/verifier, access token, refresh token, or the full callback URL.

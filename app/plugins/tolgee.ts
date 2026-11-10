@@ -322,9 +322,23 @@ const LANGUAGE_MAP: Record<string, string> = {
   Korean: 'ko'
 }
 
+/**
+ * Credentials for Tolgee's in-context translation DevTools.
+ *
+ * These live in `runtimeConfig.public.tolgee`, which nuxt.config.ts declares
+ * *only* under its `$development` block — a production build has no such key
+ * (CW-610). Access is therefore optional and guarded by `import.meta.dev`,
+ * which Vite replaces with `false` at build time so the lookup is dropped
+ * entirely from the production bundle.
+ */
+type TolgeeDevCredentials = { apiUrl?: string; apiKey?: string }
+
 export default defineNuxtPlugin((nuxtApp) => {
   const config = useRuntimeConfig()
-  const { apiUrl, apiKey } = config.public.tolgee
+  const { apiUrl, apiKey }: TolgeeDevCredentials = import.meta.dev
+    ? (((config.public as Record<string, unknown>).tolgee as TolgeeDevCredentials | undefined) ??
+      {})
+    : {}
   const canUseDevTools = import.meta.client && import.meta.dev && Boolean(apiUrl) && Boolean(apiKey)
 
   const builder = Tolgee().use(FormatIcu())

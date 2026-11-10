@@ -13,6 +13,7 @@ import {
   identifyZone
 } from '../../../utils/zones'
 import { sportSettingsRepository } from '../../../utils/repositories/sportSettingsRepository'
+import { attachStreamsToWorkouts } from '../../../utils/repositories/workoutStreamRepository'
 
 type PresetRoute =
   | 'compliance'
@@ -846,13 +847,18 @@ async function buildPowerDurationChart(
   presetOptions: Record<string, any>
 ) {
   const mode = presetOptions.mode as string
-  const workouts = await prisma.workout.findMany({
+  // CW-379: `streams` is the legacy V1 relation. Selecting it here made every
+  // team power-duration / weekly-zone preset render empty for athletes whose
+  // streams only exist in WorkoutStreamV2. Fetch the workouts, then let the
+  // repository attach streams from whichever generation holds them.
+  const workoutRecords = await prisma.workout.findMany({
     where: {
       userId: { in: userIds },
       date: { gte: startDate, lte: endDate },
       isDuplicate: false
     },
     select: {
+      id: true,
       userId: true,
       date: true,
       type: true,
@@ -861,18 +867,15 @@ async function buildPowerDurationChart(
       averageWatts: true,
       averageHr: true,
       intensity: true,
-      workAboveFtp: true,
-      streams: {
-        select: {
-          time: true,
-          watts: true,
-          heartrate: true,
-          velocity: true
-        }
-      }
+      workAboveFtp: true
     },
     orderBy: { date: 'asc' }
   })
+
+  // Only time/watts/heartrate/velocity are read below -- all in the
+  // repository's mandatory baseline, so no optional columns are fetched for
+  // what can be an entire roster's worth of workouts.
+  const workouts = await attachStreamsToWorkouts(workoutRecords, { baselineOnly: true })
 
   const userProfiles = await loadUserProfiles(userIds)
 

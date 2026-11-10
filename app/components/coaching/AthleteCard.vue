@@ -226,12 +226,15 @@
             @click.stop="$emit('message', athlete)"
           />
         </UTooltip>
-        <UTooltip v-if="canInteract" text="Act As Athlete">
+        <UTooltip v-if="canInteract" :text="actAsLabel">
           <UButton
             color="neutral"
             variant="ghost"
             icon="i-heroicons-eye"
             size="sm"
+            :label="t('athlete_card_act_as')"
+            :aria-label="actAsLabel"
+            :title="actAsLabel"
             @click.stop="$emit('act-as', athlete)"
           />
         </UTooltip>
@@ -258,6 +261,7 @@
     Filler
   } from 'chart.js'
   import { formatDistanceToNow } from 'date-fns'
+  import { useTranslate } from '@tolgee/vue'
   import { mobileListCardUi } from '~/utils/mobile-surface-ui'
 
   ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
@@ -267,6 +271,20 @@
   }>()
 
   defineEmits(['view', 'message', 'act-as'])
+
+  const { t } = useTranslate('coaching')
+
+  // Named for screen readers and on hover/long-press: the bare eye icon gave no
+  // hint that it switches the whole app to the athlete's identity (CW-541).
+  // Same fallback chain the three trigger sites use. `?? ''` produced the
+  // accessible name "View the app as " — with a trailing space and no subject —
+  // for an athlete with no name set, which is exactly the case a screen-reader
+  // user cannot recover from.
+  const actAsLabel = computed(() =>
+    t.value('athlete_card_act_as_aria', {
+      name: props.athlete?.name || props.athlete?.email || 'Athlete'
+    })
+  )
 
   const currentWellness = computed(() => props.athlete.wellness?.[0] || null)
   const canInteract = computed(

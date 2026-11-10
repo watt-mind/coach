@@ -47,6 +47,10 @@ export type WorkerMonitoringSnapshot = {
   queues: {
     webhook: QueueCounts & { workers: number; isPaused: boolean }
     ping: QueueCounts & { workers: number; isPaused: boolean }
+    // CW-379 note: `streams` here (and in getWorkerMonitoringSnapshot below) is
+    // the BullMQ `streamsQueue` -- job counts for the stream-ingest worker. It
+    // has nothing to do with the Workout `streams` relation or the V1/V2 stream
+    // tables, so there is nothing to migrate onto workoutStreamRepository.
     streams: QueueCounts & { workers: number; isPaused: boolean }
   }
   webhooks: {

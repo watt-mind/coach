@@ -2,6 +2,7 @@ import { z } from 'zod/v3'
 import { requireAuth } from '../../../utils/auth-guard'
 import { assertWorkoutComparisonAccess } from '../../../utils/analyticsScope'
 import { prisma } from '../../../utils/db'
+import { attachStreamsToWorkouts } from '../../../utils/repositories/workoutStreamRepository'
 
 const schema = z.object({
   comparison: z.object({
@@ -51,20 +52,21 @@ export default defineEventHandler(async (event) => {
   const comparison = result.data.comparison
   const workoutIds = await assertWorkoutComparisonAccess(user.id, comparison.workoutIds)
 
-  const workouts = await prisma.workout.findMany({
+  // CW-379: `streams` only covers the legacy V1 table, so lap comparison came
+  // back "no comparable lap data" for V2-only workouts. `lapSplits` is an
+  // optional column, so it has to be requested explicitly on top of the
+  // repository's baseline.
+  const workoutRecords = await prisma.workout.findMany({
     where: { id: { in: workoutIds } },
     select: {
       id: true,
       title: true,
       date: true,
-      user: { select: { name: true, email: true } },
-      streams: {
-        select: {
-          lapSplits: true
-        }
-      }
+      user: { select: { name: true, email: true } }
     }
   })
+
+  const workouts = await attachStreamsToWorkouts(workoutRecords, { fields: ['lapSplits'] })
 
   const byId = new Map(workouts.map((workout) => [workout.id, workout]))
   const ordered = workoutIds.map((id) => byId.get(id)).filter(Boolean)

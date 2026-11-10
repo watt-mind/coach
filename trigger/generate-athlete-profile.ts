@@ -34,8 +34,46 @@ import { bodyMetricResolver } from '../server/utils/services/bodyMetricResolver'
 
 import { registerTaskHandler } from '../server/utils/task-registry'
 
-// Athlete Profile schema for structured JSON output
-const athleteProfileSchema = {
+// Athlete Profile schema for structured JSON output.
+//
+// Why the length wording exists (CW-368): a single runaway field — in
+// production `current_fitness_explanation_json.sections[].title`, which came
+// back as several hundred KB of repetitive prose — exhausts the output token
+// budget, the response is cut off mid-string, and `generateObject` throws
+// `AI_JSONParseError: Unterminated string in JSON`, discarding the entire
+// otherwise-complete analysis. Sentry COACH-WATTS-WEB-12.
+//
+// READ THIS BEFORE TRUSTING `maxLength` HERE.
+//
+// The `maxLength` keys below are **declarative intent only — nothing enforces
+// them at either end**:
+//
+//   1. `@ai-sdk/google` strips them before the request is sent.
+//      `convertJSONSchemaToOpenAPISchema` destructures a strict allowlist
+//      (`type, description, required, properties, items, allOf, anyOf, oneOf,
+//      format, const, minLength, enum`). Note `minLength` is forwarded and
+//      `maxLength` is not; `grep -c maxLength` over the provider's `dist/`
+//      returns 0. Gemini never sees these numbers.
+//   2. Nothing validates the response locally either. `generateStructuredAnalysis`
+//      (`server/utils/gemini.ts`) calls `generateObject` with
+//      `schema: jsonSchema(schema)` and no `validate` option, so there is no
+//      post-parse length check.
+//
+// **The `description` text is the entire working mitigation.** The provider
+// *does* forward `description`, so wording like "a heading, not a sentence or a
+// paragraph (max 80 characters)" is what actually steers the model. Treat those
+// strings as load-bearing prompt content: if you shorten or genericise them you
+// remove the only thing standing between this task and the crash above.
+//
+// The `maxLength` keys are kept deliberately, as machine-readable intent, as the
+// thing the schema-walk regression test pins, and so the bounds are already
+// correct if/when real enforcement lands (post-parse truncation or a `validate`
+// fn — tracked separately, since `generateStructuredAnalysis` is shared by ~45
+// call sites). Keep them accurate; just do not mistake them for a guarantee.
+//
+// Limits are generous enough that a well-behaved response never bumps into them
+// while still ruling out paragraph-length output in a label field.
+export const athleteProfileSchema = {
   type: 'object',
   properties: {
     type: {
@@ -45,15 +83,19 @@ const athleteProfileSchema = {
     },
     title: {
       type: 'string',
-      description: 'Profile title'
+      maxLength: 120,
+      description: 'Profile title — a short headline, not a sentence (max 120 characters)'
     },
     generated_date: {
       type: 'string',
-      description: 'Date profile was generated'
+      maxLength: 40,
+      description: 'Date profile was generated (max 40 characters)'
     },
     executive_summary: {
       type: 'string',
-      description: "2-3 sentence overview of the athlete's current status"
+      maxLength: 600,
+      description:
+        "2-3 sentence overview of the athlete's current status (max 600 characters, not a multi-paragraph essay)"
     },
     current_fitness: {
       type: 'object',
@@ -66,12 +108,14 @@ const athleteProfileSchema = {
         },
         status_label: {
           type: 'string',
-          description: 'Display label for status'
+          maxLength: 60,
+          description: 'Display label for status — a few words, not a sentence (max 60 characters)'
         },
         key_points: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Key fitness indicators (each as separate item, 1-2 sentences)'
+          items: { type: 'string', maxLength: 300 },
+          description:
+            'Key fitness indicators (each as separate item, 1-2 sentences, max 300 characters per item)'
         }
       },
       required: ['status', 'status_label', 'key_points']
@@ -82,17 +126,18 @@ const athleteProfileSchema = {
       properties: {
         training_style: {
           type: 'string',
-          description: 'Training approach description'
+          maxLength: 300,
+          description: 'Training approach description, 1-2 sentences (max 300 characters)'
         },
         strengths: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Key strengths in training'
+          items: { type: 'string', maxLength: 200 },
+          description: 'Key strengths in training (max 200 characters per item)'
         },
         areas_for_development: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Areas that need attention'
+          items: { type: 'string', maxLength: 200 },
+          description: 'Areas that need attention (max 200 characters per item)'
         }
       },
       required: ['training_style', 'strengths', 'areas_for_development']
@@ -103,20 +148,23 @@ const athleteProfileSchema = {
       properties: {
         recovery_pattern: {
           type: 'string',
-          description: 'Overall recovery trend'
+          maxLength: 300,
+          description: 'Overall recovery trend, 1-2 sentences (max 300 characters)'
         },
         hrv_trend: {
           type: 'string',
-          description: 'HRV trend analysis'
+          maxLength: 300,
+          description: 'HRV trend analysis, 1-2 sentences (max 300 characters)'
         },
         sleep_quality: {
           type: 'string',
-          description: 'Sleep quality assessment'
+          maxLength: 300,
+          description: 'Sleep quality assessment, 1-2 sentences (max 300 characters)'
         },
         key_observations: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Important recovery observations'
+          items: { type: 'string', maxLength: 300 },
+          description: 'Important recovery observations (max 300 characters per item)'
         }
       },
       required: ['recovery_pattern', 'key_observations']
@@ -127,20 +175,24 @@ const athleteProfileSchema = {
       properties: {
         nutrition_pattern: {
           type: 'string',
-          description: 'Overall nutrition trend and consistency'
+          maxLength: 300,
+          description: 'Overall nutrition trend and consistency, 1-2 sentences (max 300 characters)'
         },
         caloric_balance: {
           type: 'string',
-          description: 'Assessment of caloric intake relative to training demands'
+          maxLength: 300,
+          description:
+            'Assessment of caloric intake relative to training demands, 1-2 sentences (max 300 characters)'
         },
         macro_distribution: {
           type: 'string',
-          description: 'Protein/carbs/fat balance assessment'
+          maxLength: 300,
+          description: 'Protein/carbs/fat balance assessment, 1-2 sentences (max 300 characters)'
         },
         key_observations: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Important nutrition observations'
+          items: { type: 'string', maxLength: 300 },
+          description: 'Important nutrition observations (max 300 characters per item)'
         }
       },
       required: ['nutrition_pattern', 'key_observations']
@@ -159,17 +211,25 @@ const athleteProfileSchema = {
           items: {
             type: 'object',
             properties: {
-              date: { type: 'string' },
-              title: { type: 'string' },
-              key_insight: { type: 'string' }
+              date: { type: 'string', maxLength: 40, description: 'Workout date' },
+              title: {
+                type: 'string',
+                maxLength: 120,
+                description: 'Workout title — a short label, not a sentence (max 120 characters)'
+              },
+              key_insight: {
+                type: 'string',
+                maxLength: 300,
+                description: '1-2 sentence insight about the workout (max 300 characters)'
+              }
             }
           },
           description: 'Highlighted workouts with insights'
         },
         patterns: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Performance patterns observed'
+          items: { type: 'string', maxLength: 300 },
+          description: 'Performance patterns observed (max 300 characters per item)'
         }
       },
       required: ['trend', 'patterns']
@@ -180,8 +240,8 @@ const athleteProfileSchema = {
       properties: {
         recurring_themes: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Common themes from recent recommendations'
+          items: { type: 'string', maxLength: 200 },
+          description: 'Common themes from recent recommendations (max 200 characters per item)'
         },
         action_items: {
           type: 'array',
@@ -189,7 +249,11 @@ const athleteProfileSchema = {
             type: 'object',
             properties: {
               priority: { type: 'string', enum: ['high', 'medium', 'low'] },
-              action: { type: 'string' }
+              action: {
+                type: 'string',
+                maxLength: 300,
+                description: 'A single concrete action, 1-2 sentences (max 300 characters)'
+              }
             }
           },
           description: 'Prioritized action items'
@@ -203,17 +267,18 @@ const athleteProfileSchema = {
       properties: {
         current_focus: {
           type: 'string',
-          description: 'What should be the focus right now'
+          maxLength: 400,
+          description: 'What should be the focus right now, 1-3 sentences (max 400 characters)'
         },
         limitations: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Current limitations or constraints'
+          items: { type: 'string', maxLength: 200 },
+          description: 'Current limitations or constraints (max 200 characters per item)'
         },
         opportunities: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Training opportunities'
+          items: { type: 'string', maxLength: 200 },
+          description: 'Training opportunities (max 200 characters per item)'
         }
       },
       required: ['current_focus']
@@ -231,24 +296,38 @@ const athleteProfileSchema = {
         },
         current_fitness_explanation: {
           type: 'string',
-          description: 'Brief summary of current fitness level'
+          maxLength: 800,
+          description: 'Brief summary of current fitness level (max 800 characters)'
         },
         current_fitness_explanation_json: {
           type: 'object',
           description: 'Structured explanation of current fitness',
           properties: {
-            executive_summary: { type: 'string', description: '2-3 sentence overview' },
+            executive_summary: {
+              type: 'string',
+              maxLength: 500,
+              description: '2-3 sentence overview (max 500 characters)'
+            },
             sections: {
               type: 'array',
               items: {
                 type: 'object',
                 properties: {
-                  title: { type: 'string' },
+                  title: {
+                    type: 'string',
+                    maxLength: 80,
+                    description:
+                      'Short section label of a few words, e.g. "Aerobic Base" — a heading, not a sentence or a paragraph (max 80 characters)'
+                  },
                   status: {
                     type: 'string',
                     enum: ['excellent', 'good', 'moderate', 'needs_improvement']
                   },
-                  analysis_points: { type: 'array', items: { type: 'string' } }
+                  analysis_points: {
+                    type: 'array',
+                    items: { type: 'string', maxLength: 400 },
+                    description: 'Analysis points, each 1-2 sentences (max 400 characters per item)'
+                  }
                 }
               }
             },
@@ -257,8 +336,17 @@ const athleteProfileSchema = {
               items: {
                 type: 'object',
                 properties: {
-                  title: { type: 'string' },
-                  description: { type: 'string' },
+                  title: {
+                    type: 'string',
+                    maxLength: 80,
+                    description:
+                      'Short recommendation label of a few words — a heading, not a sentence or a paragraph (max 80 characters)'
+                  },
+                  description: {
+                    type: 'string',
+                    maxLength: 500,
+                    description: '1-3 sentences describing the recommendation (max 500 characters)'
+                  },
                   priority: { type: 'string', enum: ['high', 'medium', 'low'] }
                 }
               }
@@ -274,24 +362,38 @@ const athleteProfileSchema = {
         },
         recovery_capacity_explanation: {
           type: 'string',
-          description: 'Brief summary of recovery capacity'
+          maxLength: 800,
+          description: 'Brief summary of recovery capacity (max 800 characters)'
         },
         recovery_capacity_explanation_json: {
           type: 'object',
           description: 'Structured explanation of recovery capacity',
           properties: {
-            executive_summary: { type: 'string', description: '2-3 sentence overview' },
+            executive_summary: {
+              type: 'string',
+              maxLength: 500,
+              description: '2-3 sentence overview (max 500 characters)'
+            },
             sections: {
               type: 'array',
               items: {
                 type: 'object',
                 properties: {
-                  title: { type: 'string' },
+                  title: {
+                    type: 'string',
+                    maxLength: 80,
+                    description:
+                      'Short section label of a few words, e.g. "Sleep Consistency" — a heading, not a sentence or a paragraph (max 80 characters)'
+                  },
                   status: {
                     type: 'string',
                     enum: ['excellent', 'good', 'moderate', 'needs_improvement']
                   },
-                  analysis_points: { type: 'array', items: { type: 'string' } }
+                  analysis_points: {
+                    type: 'array',
+                    items: { type: 'string', maxLength: 400 },
+                    description: 'Analysis points, each 1-2 sentences (max 400 characters per item)'
+                  }
                 }
               }
             },
@@ -300,8 +402,17 @@ const athleteProfileSchema = {
               items: {
                 type: 'object',
                 properties: {
-                  title: { type: 'string' },
-                  description: { type: 'string' },
+                  title: {
+                    type: 'string',
+                    maxLength: 80,
+                    description:
+                      'Short recommendation label of a few words — a heading, not a sentence or a paragraph (max 80 characters)'
+                  },
+                  description: {
+                    type: 'string',
+                    maxLength: 500,
+                    description: '1-3 sentences describing the recommendation (max 500 characters)'
+                  },
                   priority: { type: 'string', enum: ['high', 'medium', 'low'] }
                 }
               }
@@ -317,8 +428,9 @@ const athleteProfileSchema = {
         },
         nutrition_compliance_explanation: {
           type: 'string',
+          maxLength: 800,
           description:
-            "Detailed explanation of nutrition quality: calorie adherence patterns, macro balance, meal timing, and specific improvements needed (e.g., 'Increase protein to 2g/kg', 'Improve pre-workout carb intake')"
+            "Detailed explanation of nutrition quality: calorie adherence patterns, macro balance, meal timing, and specific improvements needed (e.g., 'Increase protein to 2g/kg', 'Improve pre-workout carb intake'). A few sentences, max 800 characters"
         },
         training_consistency: {
           type: 'number',
@@ -328,8 +440,9 @@ const athleteProfileSchema = {
         },
         training_consistency_explanation: {
           type: 'string',
+          maxLength: 800,
           description:
-            "Detailed explanation of training consistency: weekly adherence patterns, missed sessions analysis, and strategies for improvement (e.g., 'Set specific training times', 'Prepare gear night before')"
+            "Detailed explanation of training consistency: weekly adherence patterns, missed sessions analysis, and strategies for improvement (e.g., 'Set specific training times', 'Prepare gear night before'). A few sentences, max 800 characters"
         },
         hr_power_alignment: {
           type: 'number',
@@ -339,8 +452,9 @@ const athleteProfileSchema = {
         },
         hr_power_alignment_explanation: {
           type: 'string',
+          maxLength: 800,
           description:
-            "Detailed explanation of HR/Power alignment: analysis of decoupling, HR drift in different activities, and zone correlation (e.g., 'Significant decoupling on long rides', 'MTB power surges not reflected in HR')"
+            "Detailed explanation of HR/Power alignment: analysis of decoupling, HR drift in different activities, and zone correlation (e.g., 'Significant decoupling on long rides', 'MTB power surges not reflected in HR'). A few sentences, max 800 characters"
         }
       },
       required: [

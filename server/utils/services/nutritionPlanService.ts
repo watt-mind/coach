@@ -1,4 +1,4 @@
-import { addDays, eachDayOfInterval, endOfDay, format, startOfWeek } from 'date-fns'
+import { addDays, endOfDay, format, startOfWeek } from 'date-fns'
 import { prisma } from '../db'
 import { getUserTimezone, parseDateTimeInTimezone } from '../date'
 import { dailyBaseWindowKey } from '../../../shared/window-keys'
@@ -572,19 +572,41 @@ export const nutritionPlanService = {
   },
 
   async generateDraftPlan(userId: string, startDate: Date, endDate: Date) {
-    const plan = await this.getOrCreateWeeklyPlan(userId, startDate, 'DRAFT')
-    // The plan row always spans its full Monday-Sunday week. Persisting a caller-supplied
-    // endDate truncated the week when a sub-range was generated, which orphaned already-locked
-    // meals on the cut-off days; a range past the week overlapped the next week's plan.
-    const weekEnd = this.getWeekEndUtc(plan.startDate)
-    const rangeEnd = endDate > weekEnd ? weekEnd : endDate
-    const days = eachDayOfInterval({ start: startDate, end: rangeEnd })
-    const existingMeals = new Map<string, any>(
-      (plan.meals || []).map((meal: any) => [
-        this.getWindowAssignmentKey(meal.date, meal.windowType),
-        meal
-      ])
-    )
+    // Days are enumerated at UTC midnights: eachDayOfInterval steps host-local midnights,
+    // which drifts against the UTC date keys the meals are stored under whenever the server
+    // does not run in UTC.
+    const rangeStart = toDayStartUtc(startDate)
+    const lastDay = toDayStartUtc(endDate)
+    const days: Date[] = []
+    // Bound the work: the UI asks for at most a week; anything past a month is a bad request.
+    const maxDays = 31
+    for (
+      let day = rangeStart;
+      day <= lastDay && days.length < maxDays;
+      day = new Date(day.getTime() + 86_400_000)
+    ) {
+      days.push(day)
+    }
+
+    // Each day's meals belong to the plan whose Monday-Sunday week covers that day. A range
+    // may cross a week boundary (a client ahead of UTC serializes its local Monday as the
+    // previous UTC Sunday), and resolving one plan from the start date both dropped the later
+    // days and hid meals locked into the next week's plan from the dedupe map, duplicating
+    // them (CW-667).
+    const plansByWeekStart = new Map<string, any>()
+    const existingMeals = new Map<string, any>()
+    const planForDay = async (day: Date) => {
+      const weekKey = toDateKey(this.getWeekStartUtc(day))
+      let weekPlan = plansByWeekStart.get(weekKey)
+      if (!weekPlan) {
+        weekPlan = await this.getOrCreateWeeklyPlan(userId, day, 'DRAFT')
+        plansByWeekStart.set(weekKey, weekPlan)
+        for (const meal of weekPlan.meals || []) {
+          existingMeals.set(this.getWindowAssignmentKey(meal.date, meal.windowType), meal)
+        }
+      }
+      return weekPlan
+    }
     const [settings, user] = await Promise.all([
       prisma.userNutritionSettings.findUnique({
         where: { userId },
@@ -623,7 +645,8 @@ export const nutritionPlanService = {
     const daySummaries: any[] = []
 
     for (const day of days) {
-      const dateKey = format(day, 'yyyy-MM-dd')
+      const dateKey = toDateKey(day)
+      const plan = await planForDay(day)
       const nutritionData = await metabolicService.getNutritionDay(userId, dateKey)
       const targetContext = await metabolicService.getMealTargetContext(userId, day)
       const windows = Array.isArray((nutritionData.fuelingPlan as any)?.windows)
@@ -676,13 +699,15 @@ export const nutritionPlanService = {
           where: {
             planId_date_windowType: {
               planId: plan.id,
-              date: toDayStartUtc(day),
+              // `day` is already a UTC day start; re-deriving it through the local-tz
+              // formatter would shift it a day west of UTC.
+              date: day,
               windowType: normalizedWindowType
             }
           },
           create: {
             planId: plan.id,
-            date: toDayStartUtc(day),
+            date: day,
             windowType: normalizedWindowType,
             scheduledAt: new Date(window.startTime),
             status: 'PLANNED',
@@ -715,36 +740,45 @@ export const nutritionPlanService = {
       })
     }
 
-    // A sub-range regeneration must not wipe the summary of the untouched days.
-    const existingSummaryDays = Array.isArray((plan.summaryJson as any)?.days)
-      ? ((plan.summaryJson as any).days as any[])
-      : []
-    const mergedSummaryDays = [
-      ...existingSummaryDays.filter(
-        (day: any) => !daySummaries.some((entry) => entry.date === day.date)
-      ),
-      ...daySummaries
-    ].sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)))
+    // A sub-range regeneration must not wipe the summary of the untouched days. Each plan
+    // keeps only the summaries of days inside its own week.
+    for (const weekPlan of plansByWeekStart.values()) {
+      const weekStartKey = toDateKey(weekPlan.startDate)
+      const weekEndKey = toDateKey(this.getWeekEndUtc(weekPlan.startDate))
+      const weekSummaries = daySummaries.filter(
+        (entry) => entry.date >= weekStartKey && entry.date <= weekEndKey
+      )
+      const existingSummaryDays = Array.isArray((weekPlan.summaryJson as any)?.days)
+        ? ((weekPlan.summaryJson as any).days as any[])
+        : []
+      const mergedSummaryDays = [
+        ...existingSummaryDays.filter(
+          (day: any) => !weekSummaries.some((entry) => entry.date === day.date)
+        ),
+        ...weekSummaries
+      ].sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)))
 
-    await prisma.nutritionPlan.update({
-      where: { id: plan.id },
-      data: {
-        status: 'DRAFT',
-        endDate: weekEnd,
-        summaryJson: {
-          days: mergedSummaryDays,
-          generatedAt: new Date().toISOString()
-        } as any,
-        updatedAt: new Date()
-      }
-    })
+      await prisma.nutritionPlan.update({
+        where: { id: weekPlan.id },
+        data: {
+          status: 'DRAFT',
+          endDate: this.getWeekEndUtc(weekPlan.startDate),
+          summaryJson: {
+            days: mergedSummaryDays,
+            generatedAt: new Date().toISOString()
+          } as any,
+          updatedAt: new Date()
+        }
+      })
+    }
 
+    const firstPlan = await planForDay(days[0] || rangeStart)
     return prisma.nutritionPlan.findFirst({
-      where: { id: plan.id },
+      where: { id: firstPlan.id },
       include: {
         meals: {
           where: {
-            date: { gte: startDate, lte: rangeEnd }
+            date: { gte: rangeStart, lte: lastDay }
           },
           orderBy: [{ date: 'asc' }, { scheduledAt: 'asc' }]
         }

@@ -195,24 +195,30 @@ export const workoutTools = (userId: string, timezone: string, aiSettings: AiSet
                 tss: true,
                 structuredWorkout: true
               }
-            },
-            streams: {
-              select: {
-                avgPacePerKm: true,
-                paceVariability: true,
-                hrZoneTimes: true,
-                powerZoneTimes: true,
-                paceZones: true,
-                pacingStrategy: true
-              }
             }
           }
         })
 
         if (fallbackWorkout) {
+          // CW-379: the degraded path used to select the `streams` relation
+          // directly, which reads the legacy V1 table only -- so the coach lost
+          // pace/zone context for V2-only athletes exactly when the primary
+          // path had already failed. Same repository the primary path uses, so
+          // both paths see the same generations of stream data.
+          const withStreams = await attachStreamToWorkout(fallbackWorkout)
           return {
-            ...fallbackWorkout,
+            ...withStreams,
             date: formatUserDate(fallbackWorkout.date, timezone),
+            streams: withStreams.streams
+              ? {
+                  avgPacePerKm: withStreams.streams.avgPacePerKm,
+                  paceVariability: withStreams.streams.paceVariability,
+                  hrZoneTimes: withStreams.streams.hrZoneTimes,
+                  powerZoneTimes: withStreams.streams.powerZoneTimes,
+                  paceZones: withStreams.streams.paceZones,
+                  pacingStrategy: withStreams.streams.pacingStrategy
+                }
+              : null,
             degraded: true
           }
         }

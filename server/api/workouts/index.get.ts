@@ -1,6 +1,7 @@
 import { requireAuth } from '../../utils/auth-guard'
 import { getEffectiveUserId } from '../../utils/coaching'
 import { parseTagQueryParam } from '../../utils/workout-tags'
+import { workoutStreamRepository } from '../../utils/repositories/workoutStreamRepository'
 
 defineRouteMeta({
   openAPI: {
@@ -176,17 +177,24 @@ export default defineEventHandler(async (event) => {
       },
       aiAnalysisStatus: true,
       isDuplicate: true,
-      summaryPolyline: true,
-      streams: {
-        select: {
-          id: true
-        }
-      }
+      summaryPolyline: true
     }
   })
 
   // Fetch LLM usage for these workouts
   const workoutIds = workouts.map((w) => w.id)
+
+  // CW-379: this used to be `streams: { select: { id: true } }` in the query
+  // above, which only ever saw the legacy V1 table -- so the "Detailed Streams"
+  // badge in the workout list never appeared for athletes whose series live in
+  // WorkoutStreamV2. The repository's presence probe answers "does this workout
+  // have usable stream data?" across both tables in SQL: Postgres still reads
+  // the series to evaluate the predicate, but only a boolean crosses the wire.
+  // The response keeps its `{ id } | null` shape.
+  const streamPresence = await workoutStreamRepository.findManyByWorkoutIds(workoutIds, {
+    fields: []
+  })
+
   const llmUsages = await prisma.llmUsage.findMany({
     where: {
       entityId: { in: workoutIds },
@@ -206,8 +214,10 @@ export default defineEventHandler(async (event) => {
   // Attach usage data to workouts
   return workouts.map((workout) => {
     const usage = usageMap.get(workout.id)
+    const stream = streamPresence.get(workout.id)
     return {
       ...workout,
+      streams: stream ? { id: stream.id } : null,
       llmUsageId: usage?.id,
       feedback: usage?.feedback,
       feedbackText: usage?.feedbackText

@@ -55,6 +55,12 @@ import { publishActivityEvent } from '../server/utils/activity-realtime'
 import { normalizeSwimStructure } from '../server/utils/swim-structure'
 import { normalizeStructuredStrengthWorkout } from '../server/utils/strength-exercise-library'
 import {
+  applyStrengthIntensityTargets,
+  formatStrengthIntensityReferences,
+  loadStrengthIntensityReferences,
+  type StrengthIntensityReference
+} from '../server/utils/strength-intensity'
+import {
   applyStrengthLibraryDefaultsToWorkout,
   validateStrengthStructuredWorkout
 } from '../server/utils/strength-exercise-matching'
@@ -840,6 +846,7 @@ export async function runGenerateStructuredWorkout(
               isAdmin: true,
               aiContext: true,
               language: true,
+              weightUnits: true,
               featureFlags: true
             }
           },
@@ -873,6 +880,7 @@ export async function runGenerateStructuredWorkout(
               isAdmin: true,
               aiContext: true,
               language: true,
+              weightUnits: true,
               featureFlags: true
             }
           }
@@ -1037,6 +1045,20 @@ export async function runGenerateStructuredWorkout(
         ? 'Prefer single-value targets for steady aerobic/endurance/tempo blocks. Use ranges only when the workout explicitly asks for a range or ramp.'
         : 'Prefer metric ranges for steady aerobic/endurance/tempo blocks.'
     const isStrength = isStrengthWorkoutType(workout.type)
+    let strengthIntensityReferences: StrengthIntensityReference[] = []
+    if (isStrength) {
+      try {
+        strengthIntensityReferences = await loadStrengthIntensityReferences(prisma, workout.userId)
+        logStage('loaded-strength-intensity-references', {
+          count: strengthIntensityReferences.length
+        })
+      } catch (error: any) {
+        logStage('strength-intensity-references-failed', {
+          error: error?.message || String(error)
+        })
+      }
+    }
+    const strengthIntensityContext = formatStrengthIntensityReferences(strengthIntensityReferences)
     const sportSpecificInstructions = buildSportSpecificInstructions({
       workoutType: workout.type || '',
       targetFormatPolicy,
@@ -1068,6 +1090,8 @@ ${aiContextBlock}
 ${recentWorkoutsSummary ? `RECENT WORKOUTS (brief):\n${recentWorkoutsSummary}\n` : ''}
 ${preserveExistingStructure ? `EXISTING STRUCTURE TO PRESERVE:\n${existingStructureSummary}\n` : ''}
 ${zoneDefinitions}
+
+${strengthIntensityContext}
 
 ${targetingBlock}
 
@@ -1230,6 +1254,12 @@ OUTPUT JSON matching the schema.`
             })
           }
         }
+
+        applyStrengthIntensityTargets(
+          structure,
+          strengthIntensityReferences,
+          workout.user.weightUnits
+        )
 
         const strengthValidation = validateStrengthStructuredWorkout(
           rawStrengthStructure,

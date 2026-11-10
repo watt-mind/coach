@@ -1,0 +1,65 @@
+name: GHCR retention
+
+# Every deploy pushes an image tagged with the commit SHA. Nothing used to
+# remove the old ones, so versions accumulated until the account's shared
+# Actions/Packages storage ran out and artifact uploads began failing in
+# unrelated workflows, on green runs (CW-711).
+#
+# The script protects every named tag -- including the `buildcache` tag written
+# by `cache-to: type=registry,mode=max` -- and the per-arch/attestation child
+# manifests of everything it keeps. See scripts/ghcr-prune.mjs for why "delete
+# all untagged versions" is wrong here.
+
+on:
+  schedule:
+    # Sundays 04:40 UTC, away from deploy traffic.
+    - cron: "40 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: Per-commit SHA-tagged versions to keep
+        required: false
+        default: "5"
+        type: string
+      apply:
+        description: Actually delete (unchecked = dry run)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-retention
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune old image versions
+    runs-on: [self-hosted, shadow]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Prune
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Scheduled runs always apply; manual runs are a dry run unless asked.
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.apply }}" = "true" ]; then
+            APPLY=--apply
+          else
+            APPLY=
+          fi
+          node scripts/ghcr-prune.mjs \
+            --package coach \
+            --keep "${{ inputs.keep || '5' }}" \
+            $APPLY

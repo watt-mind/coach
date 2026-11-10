@@ -155,4 +155,95 @@ describe('GET /api/workouts/power-curve', () => {
     expect(allTime300?.freshnessState).toBe('stale')
     expect(allTime300?.daysSince).toBeGreaterThanOrEqual(399)
   })
+
+  it('does not report a duration as fresh just because the athlete rode recently (CW-380)', async () => {
+    // Regression guard for CW-380: the all-time curve was built with no
+    // reference best, so every workout validated against its own value and
+    // `lastValidatingDate` collapsed to the date of the most recent ride with
+    // power. That date then leaked into the current curve as the fallback, so a
+    // near-best effort a year ago plus an easy ride last week rendered `fresh`.
+    const handler = await getHandler()
+    const recent = { id: 'workout-recent', date: daysAgo(7) }
+    const old = { id: 'workout-old', date: daysAgo(400) }
+
+    vi.mocked(workoutRepository.getForUser)
+      .mockResolvedValueOnce([recent] as any) // current 90-day window: easy riding only
+      .mockResolvedValueOnce([recent, old] as any) // all-time
+    vi.mocked(workoutStreamRepository.findWattsByWorkoutIds).mockResolvedValue(
+      new Map([
+        ['workout-recent', steadyRide(250)],
+        ['workout-old', steadyRide(320)]
+      ])
+    )
+
+    const result = await handler({ query: { days: 90 } } as any)
+
+    // The all-time curve describes recency of a near-best effort, not of riding.
+    const allTime300 = result.allTime.find((p: any) => p.duration === 300)
+    expect(allTime300?.watts).toBe(320)
+    expect(allTime300?.daysSince).toBeGreaterThanOrEqual(399)
+    expect(allTime300?.freshnessState).toBe('stale')
+
+    // 250W is below 97% of the 320W all-time best, so the current period holds no
+    // validating effort and must not inherit a "fresh" state from the fallback.
+    const current300 = result.current.find((p: any) => p.duration === 300)
+    expect(current300?.watts).toBe(250)
+    expect(current300?.freshnessState).not.toBe('fresh')
+    expect(current300?.freshnessState).toBe('stale')
+    expect(current300?.daysSince).toBeGreaterThanOrEqual(399)
+  })
+
+  it('keeps a duration fresh when a recent effort is within the validation threshold (CW-380)', async () => {
+    const handler = await getHandler()
+    const recent = { id: 'workout-recent', date: daysAgo(7) }
+    const old = { id: 'workout-old', date: daysAgo(400) }
+
+    vi.mocked(workoutRepository.getForUser)
+      .mockResolvedValueOnce([recent] as any)
+      .mockResolvedValueOnce([recent, old] as any)
+    vi.mocked(workoutStreamRepository.findWattsByWorkoutIds).mockResolvedValue(
+      new Map([
+        ['workout-recent', steadyRide(315)], // 98.4% of the 320W all-time best
+        ['workout-old', steadyRide(320)]
+      ])
+    )
+
+    const result = await handler({ query: { days: 90 } } as any)
+
+    const current300 = result.current.find((p: any) => p.duration === 300)
+    expect(current300?.freshnessState).toBe('fresh')
+    expect(current300?.daysSince).toBeLessThanOrEqual(8)
+
+    // The all-time curve sees the same validating effort, so it is fresh too.
+    const allTime300 = result.allTime.find((p: any) => p.duration === 300)
+    expect(allTime300?.freshnessState).toBe('fresh')
+    expect(allTime300?.daysSince).toBeLessThanOrEqual(8)
+  })
+
+  it('measures all-time freshness against the all-time best, not each workout in isolation (CW-380)', async () => {
+    // Only the all-time curve is exercised here (no current-period workouts), so
+    // a regression cannot hide behind the current curve's own validation pass.
+    const handler = await getHandler()
+    const workouts = [
+      { id: 'workout-peak', date: daysAgo(500) },
+      { id: 'workout-easy', date: daysAgo(3) }
+    ]
+
+    vi.mocked(workoutRepository.getForUser)
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce(workouts as any)
+    vi.mocked(workoutStreamRepository.findWattsByWorkoutIds).mockResolvedValue(
+      new Map([
+        ['workout-peak', steadyRide(400)],
+        ['workout-easy', steadyRide(180)]
+      ])
+    )
+
+    const result = await handler({ query: { days: 90 } } as any)
+
+    const allTime300 = result.allTime.find((p: any) => p.duration === 300)
+    expect(allTime300?.watts).toBe(400)
+    expect(allTime300?.lastValidatingDate?.getTime()).toBe(workouts[0].date.getTime())
+    expect(allTime300?.freshnessState).toBe('stale')
+  })
 })

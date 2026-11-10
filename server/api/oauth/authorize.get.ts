@@ -33,6 +33,7 @@ export default defineEventHandler(async (event) => {
   const scope = query.scope as string
   const state = query.state as string
   const prompt = query.prompt as string
+  const action = query.action as string
   const codeChallenge = query.code_challenge as string
   const codeChallengeMethod = query.code_challenge_method as string
   const resource = query.resource as string
@@ -68,6 +69,17 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  // `/oauth/login` uses this branch to complete a user cancellation without
+  // requiring a web session. The app and redirect have already been validated
+  // above, so the browser never gets to choose an arbitrary destination.
+  if (action === 'deny') {
+    const errorUrl = new URL(redirectUri)
+    errorUrl.searchParams.set('error', 'access_denied')
+    errorUrl.searchParams.set('error_description', 'The user cancelled sign-in.')
+    if (state) errorUrl.searchParams.set('state', state)
+    return sendRedirect(event, errorUrl.toString(), 303)
+  }
+
   const isMcpFlow = isMcpResourceRequest(resource, siteUrl)
 
   if (isMcpFlow) {
@@ -98,9 +110,13 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  // First-party official apps: skip consent when signed in (unless prompt=consent).
+  // First-party official apps normally skip consent when already signed in.
+  // `prompt=login` is sent by native clients when the athlete explicitly starts
+  // a new login. Preserve that interaction request so the hosted login page can
+  // offer the current account alongside alternate providers instead of silently
+  // issuing another code for the browser cookie's account.
   if (app.isOfficial && prompt !== 'consent') {
-    const session = await getServerSession(event)
+    const session = prompt === 'login' ? null : await getServerSession(event)
 
     if (session?.user?.id) {
       const location = await issueAuthorizationCodeRedirect({
@@ -123,7 +139,9 @@ export default defineEventHandler(async (event) => {
       redirect_uri: redirectUri,
       scope: scope || (isMcpFlow ? '' : 'profile:read'),
       state,
-      prompt,
+      // `prompt=login` has been fulfilled by sending the athlete to this page.
+      // Keeping it in the post-provider callback would route back here forever.
+      prompt: prompt === 'login' ? undefined : prompt,
       resource,
       code_challenge: codeChallenge,
       code_challenge_method: codeChallenge

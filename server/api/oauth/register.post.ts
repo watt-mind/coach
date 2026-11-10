@@ -1,5 +1,3 @@
-import { z } from 'zod'
-import { oauthRepository } from '../../utils/repositories/oauthRepository'
 import {
   assertDcrRateLimit,
   getClientIpFromRequest,
@@ -62,18 +60,17 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const app = isCursorCompatibleDcrRequest(registration.redirectUris)
-    ? await findOrCreateCursorMcpApp({
-        ownerId,
-        redirectUris: registration.redirectUris
-      })
-    : await oauthRepository.registerPublicClient({
-        ownerId,
-        name: registration.client_name,
-        redirectUris: registration.redirectUris,
-        clientUri: registration.client_uri,
-        logoUri: registration.logo_uri
-      })
+  if (!isCursorCompatibleDcrRequest(registration.redirectUris)) {
+    throw createError({
+      statusCode: 400,
+      message: 'Unsupported dynamic client redirect URI'
+    })
+  }
+
+  const app = await findOrCreateCursorMcpApp({
+    ownerId,
+    redirectUris: registration.redirectUris
+  })
 
   setResponseStatus(event, 201)
   return serializeDcrRegistrationResponse(app)
