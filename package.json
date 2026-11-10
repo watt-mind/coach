@@ -121,7 +121,7 @@
     "eslint-config-prettier": "^10.1.8",
     "glob": "^13.0.6",
     "h3": "1.15.11",
-    "happy-dom": "^20.3.1",
+    "happy-dom": "^21.0.4",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "magicast": "^0.3.5",
