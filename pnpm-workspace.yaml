@@ -1,3 +1,8 @@
+# Allowlist of packages permitted to run install/build scripts at all. This is a
+# yes/no switch per package -- it cannot constrain *how* a package builds itself.
+# The container build additionally requires the native modules here to come from
+# published prebuilt binaries and refuses a from-source compile; see Dockerfile
+# (stage `deps`) and CW-618 before changing native-dependency build policy.
 allowBuilds:
   '@parcel/watcher': true
   '@prisma/client': true
