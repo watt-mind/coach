@@ -2,7 +2,7 @@
 
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
-import { defineComponent, nextTick } from 'vue'
+import { defineComponent, nextTick, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import AthleteDetailPage from '../../../../app/pages/coaching/athletes/[id]/index.vue'
@@ -12,20 +12,34 @@ import { useCoachingStore } from '../../../../app/stores/coaching'
 // default string and interpolates `{name}` itself when Tolgee returns the key,
 // so the expected labels below exercise the same fallback path production
 // uses for missing translations.
+const { translateMock, useTranslateMock } = vi.hoisted(() => ({
+  translateMock: vi.fn((key: string) => key),
+  useTranslateMock: vi.fn()
+}))
+
 function makeTranslateStub() {
-  const t = (key: string) => key
+  const t = translateMock
   ;(t as any).value = t
   return t
 }
 
 vi.mock('@tolgee/vue', () => ({
-  useTranslate: () => ({ t: makeTranslateStub() })
+  useTranslate: (namespace: string) => {
+    useTranslateMock(namespace)
+    return { t: makeTranslateStub() }
+  }
 }))
 
 let routeId = 'athlete-1'
 let athletePayload: Record<string, any> | null = null
 
 mockNuxtImport('useRoute', () => () => ({ params: { id: routeId }, query: {} }))
+mockNuxtImport('useAuth', () => () => ({
+  status: ref('authenticated'),
+  data: ref({ user: { id: 'coach-1', onboardingCompleted: true } }),
+  getSession: vi.fn().mockResolvedValue(null),
+  refresh: vi.fn().mockResolvedValue(null)
+}))
 mockNuxtImport('useToast', () => () => ({ add: vi.fn() }))
 mockNuxtImport('useFormat', () => () => ({
   formatDateUTC: (_date: unknown, formatStr?: string) => formatStr || ''
@@ -102,6 +116,7 @@ describe('Athlete detail act-as trigger accessible label (CW-642)', () => {
   const fetchMock = vi.fn()
 
   beforeEach(() => {
+    vi.clearAllMocks()
     setActivePinia(createPinia())
     fetchMock.mockReset()
     fetchMock.mockImplementation(async (url: string) => {
@@ -121,48 +136,33 @@ describe('Athlete detail act-as trigger accessible label (CW-642)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('names the athlete in the act-as aria-label, consistent with AthleteCard', async () => {
-    routeId = 'athlete-label-name'
-    athletePayload = buildAthleteResponse({ name: 'Ada Athlete' })
+  it.each([
+    { scenario: 'name', name: 'Ada Athlete', email: 'ada@example.test', label: 'Ada Athlete' },
+    { scenario: 'email only', name: null, email: 'ada@example.test', label: 'ada@example.test' },
+    { scenario: 'neither value', name: null, email: null, label: 'Athlete' },
+    { scenario: 'empty strings', name: '', email: '', label: 'Athlete' }
+  ])(
+    'labels and stages the selected athlete with $scenario',
+    async ({ scenario, name, email, label }) => {
+      routeId = `selected-athlete-${scenario.replaceAll(' ', '-')}`
+      athletePayload = buildAthleteResponse({ name, email })
 
-    const wrapper = await mountPage()
-    const actAs = findActAsButton(wrapper)
+      const wrapper = await mountPage()
+      const actAs = findActAsButton(wrapper)
+      const store = useCoachingStore()
+      store.cancelActingAs()
 
-    expect(actAs.attributes('aria-label')).toBe('View the app as Ada Athlete')
-    expect(actAs.attributes('title')).toBe('View the app as Ada Athlete')
-  })
+      expect(useTranslateMock).toHaveBeenCalledWith('coaching')
+      expect(translateMock).toHaveBeenCalledWith('athlete_card_act_as_aria')
+      expect(actAs.attributes('aria-label')).toBe(`View the app as ${label}`)
+      expect(actAs.attributes('title')).toBe(`View the app as ${label}`)
+      expect(store.pendingActAs).toBeNull()
 
-  it('falls back to the email when the athlete has no name', async () => {
-    routeId = 'athlete-label-email'
-    athletePayload = buildAthleteResponse({ name: null, email: 'ada@example.test' })
+      await actAs.trigger('click')
 
-    const wrapper = await mountPage()
-    const actAs = findActAsButton(wrapper)
-
-    expect(actAs.attributes('aria-label')).toBe('View the app as ada@example.test')
-  })
-
-  it('falls back to "Athlete" when neither name nor email is set', async () => {
-    routeId = 'athlete-label-fallback'
-    athletePayload = buildAthleteResponse({ name: null, email: null })
-
-    const wrapper = await mountPage()
-    const actAs = findActAsButton(wrapper)
-
-    expect(actAs.attributes('aria-label')).toBe('View the app as Athlete')
-  })
-
-  it('clicking Act As stages the selected athlete without changing identity', async () => {
-    routeId = 'athlete-label-click'
-    athletePayload = buildAthleteResponse({ name: 'Ada Athlete' })
-
-    const wrapper = await mountPage()
-    const actAs = findActAsButton(wrapper)
-
-    await actAs.trigger('click')
-
-    const store = useCoachingStore()
-    expect(store.pendingActAs).toEqual({ userId: 'athlete-label-click', userName: 'Ada Athlete' })
-    expect(store.actingAsUserId).toBeNull()
-  })
+      expect(store.pendingActAs).toEqual({ userId: routeId, userName: label })
+      expect(store.actingAsUserId).toBeNull()
+      wrapper.unmount()
+    }
+  )
 })
