@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Runs in the plain node environment (was *.nuxt.test.ts, which booted a full
+// Nuxt app per file for ~17s while every Nuxt global is stubbed anyway). The
+// handler's auto-imported useRuntimeConfig resolves to #app/nuxt here, so route
+// it to the global stub below.
+vi.mock('#app/nuxt', () => ({
+  useRuntimeConfig: () => (globalThis as any).useRuntimeConfig()
+}))
+
 vi.stubGlobal('defineEventHandler', (fn: any) => fn)
 vi.stubGlobal('defineRouteMeta', vi.fn())
 vi.stubGlobal('readBody', (event: any) => event.body)
