@@ -1,5 +1,4 @@
-import { z } from 'zod'
-import { getEffectiveUserId } from '../../utils/coaching'
+import { getServerSession } from '../../utils/session'
 import { prisma } from '../../utils/db'
 import { isMcpResourceRequest } from '../../utils/oauth/resource'
 import { issueAuthorizationCodeRedirect } from '../../utils/oauth/issue-authorization-code'
@@ -41,7 +40,14 @@ defineRouteMeta({
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
   const siteUrl = config.public.siteUrl
-  const userId = await getEffectiveUserId(event)
+  const session = await getServerSession(event)
+  const userId = session?.user?.id
+  if (!userId) {
+    throw createError({ statusCode: 401, message: 'Unauthorized' })
+  }
+  if (session.user?.deactivatedAt) {
+    throw createError({ statusCode: 403, message: 'Account deactivated' })
+  }
   const body = normalizeAuthorizeBody(await readBody(event))
   const query = getQuery(event)
   const payload = {
