@@ -97,7 +97,10 @@ export default defineEventHandler(async (event) => {
     }
 
     workouts.forEach((w) => {
-      const localDay = parseInt(formatUserDate(w.date, timezone, 'd'))
+      // Planned dates are calendar carriers; completed dates are timestamps.
+      const localDay = parseInt(
+        isPlanned ? formatDateUTC(w.date, 'd') : formatUserDate(w.date, timezone, 'd')
+      )
       if (daily[localDay]) {
         daily[localDay].tss += w.tss || 0
         daily[localDay].duration += (w.durationSec || 0) / 3600
@@ -148,7 +151,7 @@ export default defineEventHandler(async (event) => {
     return cumulative
   }
 
-  const todayDay = parseInt(formatUserDate(nowLocal, timezone, 'd'))
+  const todayDay = nowLocal.getUTCDate()
 
   return {
     currentMonth: {
