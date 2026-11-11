@@ -1,3 +1,4 @@
+import { prisma } from '../../utils/db'
 import { requireAuth } from '../../utils/auth-guard'
 
 defineRouteMeta({
@@ -27,6 +28,7 @@ defineRouteMeta({
           }
         }
       },
+      400: { description: 'Goal has a plan that must be abandoned or archived' },
       401: { description: 'Unauthorized' },
       404: { description: 'Goal not found' }
     }
@@ -45,10 +47,17 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  const protectedPlanError = createError({
+    statusCode: 400,
+    statusMessage:
+      'Only drafts or templates can be permanently deleted. Linked plans must be abandoned or archived before deleting this goal.'
+  })
+
   try {
     // Check if goal belongs to user
     const goal = await prisma.goal.findUnique({
-      where: { id }
+      where: { id },
+      include: { trainingPlans: { select: { status: true, isTemplate: true } } }
     })
 
     if (!goal || goal.userId !== user.id) {
@@ -56,6 +65,10 @@ export default defineEventHandler(async (event) => {
         statusCode: 404,
         statusMessage: 'Goal not found'
       })
+    }
+
+    if (goal.trainingPlans.some((plan) => plan.status !== 'DRAFT' && !plan.isTemplate)) {
+      throw protectedPlanError
     }
 
     await prisma.goal.delete({
@@ -66,6 +79,8 @@ export default defineEventHandler(async (event) => {
       success: true
     }
   } catch (error) {
+    // Preserve this deliberate rejection without changing legacy ownership error handling (CW-690).
+    if (error === protectedPlanError) throw error
     console.error('Error deleting goal:', error)
     throw createError({
       statusCode: 500,
