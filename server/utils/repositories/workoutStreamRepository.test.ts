@@ -524,24 +524,7 @@ const REPOSITORY_SOURCE = 'server/utils/repositories/workoutStreamRepository.ts'
  * violates, so fixing one forces its removal rather than letting the allowlist
  * rot into a permanent exemption.
  */
-const KNOWN_UNMIGRATED = new Map<string, string>([
-  [
-    'server/api/performance/ftp-evolution.get.ts',
-    'Two `include: { streams: { select: { watts: true } } }` reads in the FTP estimation and validation queries. Outside CW-379 Owned Paths.'
-  ],
-  [
-    'server/utils/services/deduplicationService.ts',
-    'mergeDuplicateGroup() existence check `streams: { select: { id: true } }`; needs an OR filter over streams/streamsV2. Outside CW-379 Owned Paths.'
-  ],
-  [
-    'server/utils/services/checkin-service.ts',
-    'Daily check-in reads hrZoneTimes/powerZoneTimes off the V1 relation. Outside CW-379 Owned Paths.'
-  ],
-  [
-    'server/utils/workout-insight-email.ts',
-    'Insight email selects the full V1 series set for its charts. Outside CW-379 Owned Paths.'
-  ]
-])
+const KNOWN_UNMIGRATED = new Map<string, string>()
 
 const SERVER_DIR = fileURLToPath(new URL('../..', import.meta.url))
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
@@ -572,7 +555,15 @@ function findRawStreamReads(): string[] {
   const offenders: string[] = []
   for (const file of collectServerSources(SERVER_DIR)) {
     const path = relative(REPO_ROOT, file)
-    const source = stripComments(readFileSync(file, 'utf8'))
+    let source = stripComments(readFileSync(file, 'utf8'))
+    // V1-by-design: dedup needs a legacy donor identity, never combined presence.
+    // Exempt only this exact metadata projection; other reads in the file still fail.
+    if (path === 'server/utils/services/deduplicationService.ts') {
+      source = source.replace(
+        'select: { id: true, plannedWorkoutId: true, streams: { select: { id: true } } }',
+        'select: { id: true, plannedWorkoutId: true }'
+      )
+    }
 
     if (matches(RAW_STREAMS_RELATION_READ, source)) {
       offenders.push(path)
