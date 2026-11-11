@@ -23,6 +23,8 @@ const runs = ref<TriggerRun[]>([])
 const isConnected = ref(false)
 const isLoading = ref(false)
 let ws: WebSocket | null = null
+let connectionGeneration = 0
+let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let activeSubscribers = 0
 let initPromise: Promise<void> | null = null
 let pollInterval: NodeJS.Timeout | null = null
@@ -47,10 +49,14 @@ function resetRunsForIdentityChange() {
 }
 
 function cleanupUserRunsConnection() {
-  if (ws) {
-    ws.close()
-    ws = null
+  connectionGeneration++
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout)
+    reconnectTimeout = null
   }
+  const socket = ws
+  ws = null
+  socket?.close()
 
   isConnected.value = false
   initPromise = null
@@ -137,7 +143,7 @@ export function useUserRuns() {
 
   // --- WebSocket ---
   const connectWebSocket = () => {
-    if (ws) return
+    if (ws || activeSubscribers <= 0) return
     if (!session.value?.user || !(session.value.user as any).id) {
       return
     }
@@ -145,24 +151,28 @@ export function useUserRuns() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const url = `${protocol}//${window.location.host}/api/websocket`
 
-    ws = new WebSocket(url)
+    const socket = new WebSocket(url)
+    ws = socket
 
-    ws.onopen = async () => {
+    socket.onopen = async () => {
+      if (ws !== socket) return
       isConnected.value = true
       startPolling()
       startPing()
       if (session.value?.user && (session.value.user as any).id) {
         try {
           const { token } = await ($fetch as any)('/api/websocket-token')
-          ws?.send(JSON.stringify({ type: 'authenticate', token }))
-          ws?.send(JSON.stringify({ type: 'subscribe_user' }))
+          if (ws !== socket || socket.readyState !== WebSocket.OPEN) return
+          socket.send(JSON.stringify({ type: 'authenticate', token }))
+          socket.send(JSON.stringify({ type: 'subscribe_user' }))
         } catch (e) {
           console.error('WS Auth failed', e)
         }
       }
     }
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (ws !== socket) return
       try {
         const data = JSON.parse(event.data)
         if (data.type === 'run_update') {
@@ -194,13 +204,17 @@ export function useUserRuns() {
       }
     }
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+      if (ws !== socket) return
       isConnected.value = false
       ws = null
       stopPing()
       startPolling()
       if (activeSubscribers > 0) {
-        setTimeout(connectWebSocket, 3000)
+        reconnectTimeout = setTimeout(() => {
+          reconnectTimeout = null
+          connectWebSocket()
+        }, 3000)
       }
     }
   }
@@ -254,10 +268,12 @@ export function useUserRuns() {
       return
     }
 
+    const generation = connectionGeneration
     if (!initPromise) {
       initPromise = fetchActiveRuns()
     }
     await initPromise
+    if (generation !== connectionGeneration || activeSubscribers <= 0) return
     connectWebSocket()
     startPolling()
   }
