@@ -100,6 +100,17 @@ export default defineEventHandler(async (event) => {
 
   const workout = await attachStreamToWorkout(workoutRecord)
 
-  const { userId, externalId, ...safeWorkout } = workout
-  return safeWorkout
+  const { userId, externalId, plannedWorkout, ...safeWorkout } = workout
+  return {
+    ...safeWorkout,
+    // Public PlanAdherence needs only these fields. New model fields stay private.
+    plannedWorkout: plannedWorkout
+      ? {
+          id: plannedWorkout.id,
+          title: plannedWorkout.title,
+          type: plannedWorkout.type,
+          durationSec: plannedWorkout.durationSec
+        }
+      : null
+  }
 })
