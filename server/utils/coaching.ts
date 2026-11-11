@@ -38,6 +38,11 @@ async function validateOAuthToken(event: H3Event) {
     return null
   }
 
+  // REST only accepts legacy resource-less tokens; bound tokens belong to their audience.
+  if (token.resource) {
+    return null
+  }
+
   // Update usage info (async)
   prisma.oAuthToken
     .update({

@@ -167,6 +167,61 @@ describe('requireAuth OAuth policy (CW-669)', () => {
     }
   )
 
+  it.each(['https://app.coachwatts.com/mcp', 'https://other.example/api', ' '])(
+    'rejects audience %j even with matching scopes or explicit opt-in',
+    async (resource) => {
+      getAccessTokenMock.mockResolvedValue({
+        ...OAUTH_TOKEN,
+        resource,
+        accessTokenExpiresAt: new Date(Date.now() + 60_000)
+      })
+      for (const { scopes, options } of [
+        { scopes: ['profile:read'], options: undefined },
+        { scopes: ['profile:read'], options: { allowOAuth: true } },
+        { scopes: undefined, options: { allowOAuth: true } }
+      ]) {
+        const event = oauthEvent()
+        await expect(requireAuth(event, scopes, options)).rejects.toMatchObject({
+          statusCode: 401
+        })
+        expect(event.context).toEqual({})
+      }
+      expect(oAuthTokenUpdateMock).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([null, undefined, ''])('accepts legacy resource %j', async (resource) => {
+    getAccessTokenMock.mockResolvedValue({ ...OAUTH_TOKEN, resource })
+    await expect(requireAuth(oauthEvent(), ['profile:read'])).resolves.toEqual(ACTIVE_USER)
+    expect(oAuthTokenUpdateMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([null, { ...OAUTH_TOKEN, accessTokenExpiresAt: new Date(0) }])(
+    'rejects missing or expired token %j without usage tracking',
+    async (token) => {
+      getAccessTokenMock.mockResolvedValue(token)
+      await expect(requireAuth(oauthEvent(), ['profile:read'])).rejects.toMatchObject({
+        statusCode: 401
+      })
+      expect(oAuthTokenUpdateMock).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['session', 'api_key'])('prefers %s over a bound bearer', async (authType) => {
+    getAccessTokenMock.mockResolvedValue({
+      ...OAUTH_TOKEN,
+      resource: 'https://app.coachwatts.com/mcp'
+    })
+    if (authType === 'session')
+      getServerSessionMock.mockResolvedValue({ user: { id: ACTIVE_USER.id } })
+    else validateApiKeyMock.mockResolvedValue(ACTIVE_USER)
+    const event = oauthEvent()
+    await expect(requireAuth(event, ['profile:read'])).resolves.toEqual(ACTIVE_USER)
+    expect(event.context.authType).toBe(authType)
+    expect(getAccessTokenMock).not.toHaveBeenCalled()
+    expect(oAuthTokenUpdateMock).not.toHaveBeenCalled()
+  })
+
   it('returns 401 when no credentials are presented', async () => {
     await expect(requireAuth(anonymousEvent())).rejects.toMatchObject({ statusCode: 401 })
   })
