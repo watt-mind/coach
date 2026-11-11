@@ -133,20 +133,38 @@ function readNamedBindings(source: ts.SourceFile): NamedBindingUse[] {
   return uses
 }
 
-/** Task ids declared in the source: any `…task({ id: '<literal>' })` call. */
+/**
+ * Whether a call expression actually declares a Trigger.dev task.
+ *
+ * Only the exact, case-sensitive callee forms that create tasks qualify: the bare `task`
+ * and `schemaTask` identifiers, and `schedules.task` where the receiver is exactly the
+ * `schedules` identifier. Anything else — `updateTask`, `enqueueTask`, `Task`, or `.task`
+ * on an arbitrary object — is a plain helper call and must not be mistaken for a declaration
+ * (CW-664). Import alias/provenance analysis is deliberately out of scope: until a new
+ * task-creating helper is added here, the failure mode is a missed check rather than a
+ * broken build, and the discovery tripwire below catches an allowlist that is too narrow.
+ */
+function isTaskDeclaringCallee(callee: ts.Expression): boolean {
+  if (ts.isIdentifier(callee)) {
+    return callee.text === 'task' || callee.text === 'schemaTask'
+  }
+  if (ts.isPropertyAccessExpression(callee)) {
+    return (
+      ts.isIdentifier(callee.expression) &&
+      callee.expression.text === 'schedules' &&
+      callee.name.text === 'task'
+    )
+  }
+  return false
+}
+
+/** Task ids declared in the source: `task({ id: '<literal>' })` and its supported forms. */
 function readDeclaredTaskIds(source: ts.SourceFile): string[] {
   const ids: string[] = []
 
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
-      const callee = node.expression
-      const calleeName = ts.isPropertyAccessExpression(callee)
-        ? callee.name.text
-        : ts.isIdentifier(callee)
-          ? callee.text
-          : ''
-
-      if (/task$/i.test(calleeName)) {
+      if (isTaskDeclaringCallee(node.expression)) {
         const [config] = node.arguments
         if (config && ts.isObjectLiteralExpression(config)) {
           for (const property of config.properties) {
@@ -168,6 +186,68 @@ function readDeclaredTaskIds(source: ts.SourceFile): string[] {
   visit(source)
   return ids
 }
+
+/** Parse an inline snippet with the same settings used for real trigger modules. */
+function declaredIdsForSnippet(snippet: string): string[] {
+  const source = ts.createSourceFile(
+    'snippet.ts',
+    snippet,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  )
+  return readDeclaredTaskIds(source)
+}
+
+describe('readDeclaredTaskIds', () => {
+  test('recognises exactly the supported task-declaring callee forms', () => {
+    expect(declaredIdsForSnippet(`task({ id: 'a-task' })`)).toEqual(['a-task'])
+    expect(declaredIdsForSnippet(`schemaTask({ id: 'a-schema-task' })`)).toEqual(['a-schema-task'])
+    expect(declaredIdsForSnippet(`schedules.task({ id: 'a-scheduled-task' })`)).toEqual([
+      'a-scheduled-task'
+    ])
+  })
+
+  test('ignores lookalike callee names that do not declare tasks', () => {
+    for (const snippet of [
+      `updateTask({ id: 'not-a-task' })`,
+      `enqueueTask({ id: 'not-a-task' })`,
+      `cancelTask({ id: 'not-a-task' })`,
+      `Task({ id: 'not-a-task' })`,
+      `TASK({ id: 'not-a-task' })`,
+      `UpdateTask({ id: 'not-a-task' })`,
+      `myTask({ id: 'not-a-task' })`
+    ]) {
+      expect(declaredIdsForSnippet(snippet)).toEqual([])
+    }
+  })
+
+  test('ignores .task calls on arbitrary receivers', () => {
+    for (const snippet of [
+      `arbitraryObject.task({ id: 'not-a-task' })`,
+      `somethingElse.task({ id: 'not-a-task' })`,
+      `foo.schedules.task({ id: 'not-a-task' })`
+    ]) {
+      expect(declaredIdsForSnippet(snippet)).toEqual([])
+    }
+  })
+
+  test('ignores non-literal ids and non-object configs, still finds nested declarations', () => {
+    expect(declaredIdsForSnippet(`task({ id: someVariable })`)).toEqual([])
+    expect(declaredIdsForSnippet(`task('just-a-string')`)).toEqual([])
+    expect(declaredIdsForSnippet(`task()`)).toEqual([])
+    expect(declaredIdsForSnippet(`task(config)`)).toEqual([])
+    expect(
+      declaredIdsForSnippet(`
+        function register() {
+          if (enabled) {
+            task({ id: 'nested-task' })
+          }
+        }
+      `)
+    ).toEqual(['nested-task'])
+  })
+})
 
 const modules: TriggerModule[] = collectModuleFiles(triggerDir)
   .sort()
