@@ -23,6 +23,8 @@
               color="neutral"
               variant="ghost"
               icon="i-heroicons-eye"
+              :aria-label="actAsDetailLabel"
+              :title="actAsDetailLabel"
               @click="
                 () => {
                   void actAsAthlete()
@@ -722,6 +724,16 @@
   ) as any
 
   const athleteName = computed(() => athlete.value?.name || 'Athlete Profile')
+
+  // Accessible name for the act-as trigger, mirroring AthleteCard's actAsLabel
+  // (CW-642). Reuses the same `athlete_card_act_as_aria` Tolgee key and the
+  // same name || email || 'Athlete' fallback so a nameless athlete never
+  // yields a dangling label.
+  const actAsDetailLabel = computed(() =>
+    tr('athlete_card_act_as_aria', 'View the app as {name}', {
+      name: (athlete.value?.name || athlete.value?.email || 'Athlete') as string
+    })
+  )
 
   useHead({
     title: computed(() => `${athleteName.value} - Coaching`)
