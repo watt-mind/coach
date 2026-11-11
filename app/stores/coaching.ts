@@ -92,15 +92,13 @@ export const useCoachingStore = defineStore('coaching', () => {
   // here). Stale localStorage must never recreate an absent cookie or override
   // a different one — the cookie always wins (CW-644).
   //
-  // `skipHydrate` history: CW-637 added it to stop SSR `null`s wiping the
-  // localStorage restore. Cookie hydration now makes it unnecessary for the
-  // ID (SSR serialises the cookie value, so hydration re-applies the same
-  // ID). It is retained on the display name only: the name cache lives in
-  // localStorage with no SSR source, and the banner that renders it is
-  // `ClientOnly`, so skipping its hydration preserves the cached name without
-  // affecting SSR agreement (which depends on the ID alone).
+  // Pinia applies serialized state after setup. Historical nulls or a stale
+  // payload must not override current cookie intent (including its absence).
+  // Both SSR and client initialize from the cookie, so skipping payload writes
+  // preserves SSR agreement as well as the client exit affordance (CW-637).
+  // The ClientOnly banner may additionally use a matching cached display name.
   const initialActAsId = readActAsCookieId()
-  const actingAsUserId = ref<string | null>(initialActAsId)
+  const actingAsUserId = skipHydrate(ref<string | null>(initialActAsId))
   const actingAsUserName = skipHydrate(ref<string | null>(initialActAsId))
 
   /**

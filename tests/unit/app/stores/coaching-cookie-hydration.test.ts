@@ -1,7 +1,11 @@
 // @vitest-environment nuxt
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { setActivePinia, createPinia } from 'pinia'
+import { setActivePinia, createPinia, defineStore, skipHydrate } from 'pinia'
+import { ref, computed } from 'vue'
+import { readFileSync } from 'node:fs'
+import { transformSync } from 'esbuild'
+import { parse } from 'cookie-es'
 import { useCoachingStore, ACT_AS_COOKIE_NAME } from '../../../../app/stores/coaching'
 
 const COOKIE = ACT_AS_COOKIE_NAME
@@ -40,10 +44,38 @@ function createFreshStore(ssrPayload?: Record<string, unknown> | null) {
   setActivePinia(pinia)
   if (ssrPayload !== undefined) {
     // Simulate the serialized SSR Pinia payload the client hydrates from.
-    // `null` simulates the historical pre-fix payload that always carried nulls.
+    // A null store object is distinct from an object containing null fields.
     pinia.state.value.coaching = ssrPayload as never
   }
   return useCoachingStore()
+}
+
+/**
+ * Execute the production setup with the server compile-time branch selected.
+ * Supply Nuxt's auto-imports explicitly; the request-scoped useCookie adapter
+ * reads an actual Cookie header. This isolates server setup from the Nuxt
+ * client runtime without pretending document.cookie exercises SSR.
+ */
+function initializeServer(cookieHeader: string) {
+  const source = readFileSync('app/stores/coaching.ts', 'utf8')
+    .replace("import { defineStore, skipHydrate } from 'pinia'", '')
+    .replace(/export /g, '')
+    .replace(/import\.meta\.client/g, 'false')
+  const code = transformSync(source, { loader: 'ts', format: 'cjs' }).code
+  const requestCookies = parse(cookieHeader)
+  const useCookie = vi.fn((name: string) => ref(requestCookies[name] ?? null))
+  const load = new Function(
+    'defineStore',
+    'skipHydrate',
+    'ref',
+    'computed',
+    'useCookie',
+    code + '\nreturn useCoachingStore'
+  )
+  const pinia = createPinia()
+  const store = load(defineStore, skipHydrate, ref, computed, useCookie)(pinia)
+  expect(useCookie).toHaveBeenCalledWith(COOKIE)
+  return { store, payload: JSON.parse(JSON.stringify(pinia.state.value.coaching)) }
 }
 
 describe('useCoachingStore cookie hydration (CW-644)', () => {
@@ -189,6 +221,75 @@ describe('useCoachingStore cookie hydration (CW-644)', () => {
 
     expect(store.actingAsUserId).toBeNull()
     expect(store.isCoachingMode).toBe(false)
+  })
+
+  it.each([null, 'athlete-123'])(
+    'server request cookie %s survives a serialized client round trip',
+    (id) => {
+      // Deliberately conflicting browser state must not influence server setup.
+      setCookie('browser-other')
+      setLegacyStorage('athlete-999', 'Wrong Name')
+      const server = initializeServer(id ? `${COOKIE}=${id}` : '')
+      expect(server.store.actingAsUserId).toBe(id)
+      expect(server.store.actingAsUserName).toBe(id)
+      expect(server.store.isCoachingMode).toBe(!!id)
+      expect(server.payload.actingAsUserId).toBe(id)
+
+      setCookie(id)
+      const client = createFreshStore(server.payload)
+      expect(client.actingAsUserId).toBe(id)
+      expect(client.isCoachingMode).toBe(server.store.isCoachingMode)
+      expect(client.actingAsUserName).toBe(id)
+    }
+  )
+
+  it.each([undefined, null, 'athlete-999'])(
+    'cookie identity and matching name survive payload ID %s',
+    (payloadId) => {
+      setCookie('athlete-123')
+      setLegacyStorage('athlete-123', 'Ada Athlete')
+      const store = createFreshStore(
+        payloadId === undefined
+          ? undefined
+          : {
+              actingAsUserId: payloadId,
+              actingAsUserName: 'Wrong Name',
+              pendingActAs: null
+            }
+      )
+      expect(store.actingAsUserId).toBe('athlete-123')
+      expect(store.actingAsUserName).toBe('Ada Athlete')
+      expect(store.isCoachingMode).toBe(true)
+    }
+  )
+
+  it('the actual historical all-null payload preserves cookie-only identity and exit', () => {
+    setCookie('athlete-123')
+    const store = createFreshStore({
+      actingAsUserId: null,
+      actingAsUserName: null,
+      pendingActAs: null
+    })
+    expect(store.actingAsUserId).toBe('athlete-123')
+    expect(store.actingAsUserName).toBe('athlete-123')
+    expect(store.isCoachingMode).toBe(true)
+    store.stopActingAs()
+    expect(getCookieRaw()).toBeNull()
+    expect(store.isCoachingMode).toBe(false)
+    expect(reloadSpy).toHaveBeenCalledOnce()
+  })
+
+  it('no cookie rejects both a stale hydrated ID and stale storage', () => {
+    setLegacyStorage('athlete-999', 'Wrong Name')
+    const store = createFreshStore({
+      actingAsUserId: 'athlete-999',
+      actingAsUserName: 'Wrong Name',
+      pendingActAs: null
+    })
+    expect(store.actingAsUserId).toBeNull()
+    expect(store.actingAsUserName).toBeNull()
+    expect(store.isCoachingMode).toBe(false)
+    expect(getCookieRaw()).toBeNull()
   })
 
   it('confirmation is still required; cancel never switches identity or writes persistence', () => {
