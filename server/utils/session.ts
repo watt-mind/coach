@@ -107,7 +107,7 @@ export async function getServerSession(event: H3Event): Promise<CustomSession | 
             language: targetUser.language ?? null,
             uiLanguage: targetUser.uiLanguage ?? null,
             deactivatedAt: targetUser.deactivatedAt ?? null,
-            isAdmin: (targetUser as any).isAdmin || false,
+            isAdmin: false,
             isCoaching: true,
             originalUserId: currentUserId,
             originalUserEmail: session.user.email
