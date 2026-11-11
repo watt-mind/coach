@@ -84,6 +84,10 @@ export async function triggerReadinessCheckIfNeeded(userId: string) {
   return { triggered: false, reason: 'Auto-triggering of recommendation is disabled' }
 }
 
+function getSleepHours(record: { sleepHours: number | null; sleepSecs: number | null }) {
+  return record.sleepHours ?? (record.sleepSecs != null ? record.sleepSecs / 3600 : null)
+}
+
 export async function analyzeWellness(wellnessId: string, userId: string) {
   // Fetch the wellness record
   const wellness = await prisma.wellness.findUnique({
@@ -98,6 +102,7 @@ export async function analyzeWellness(wellnessId: string, userId: string) {
     const timezone = await getUserTimezone(userId)
     const today = getUserLocalDate(timezone)
     const canonicalStress = getCanonicalWellnessStress(wellness)
+    const sleepHours = getSleepHours(wellness)
 
     // 1. Skip if future date
     if (wellness.date > today) {
@@ -115,7 +120,7 @@ export async function analyzeWellness(wellnessId: string, userId: string) {
     const hasData =
       wellness.hrv !== null ||
       wellness.restingHr !== null ||
-      wellness.sleepHours !== null ||
+      sleepHours !== null ||
       wellness.recoveryScore !== null ||
       wellness.readiness !== null
 
@@ -186,6 +191,7 @@ export async function analyzeWellness(wellnessId: string, userId: string) {
         hrvSdnn: true,
         restingHr: true,
         sleepHours: true,
+        sleepSecs: true,
         sleepScore: true,
         recoveryScore: true,
         readiness: true,
@@ -196,6 +202,8 @@ export async function analyzeWellness(wellnessId: string, userId: string) {
       orderBy: { date: 'asc' }
     })
 
+    const historySleepHours = history.map(getSleepHours).filter((hours) => hours != null)
+
     // Format recent history (last 5 days) for trend context
     const recentHistory = history
       .slice(-5)
@@ -205,7 +213,8 @@ export async function analyzeWellness(wellnessId: string, userId: string) {
         if (h.hrv) parts.push(`HRV(rMSSD):${Math.round(h.hrv)}`)
         if (h.hrvSdnn) parts.push(`HRV(SDNN):${Math.round(h.hrvSdnn)}`)
         if (h.restingHr) parts.push(`RHR:${h.restingHr}`)
-        if (h.sleepHours) parts.push(`Sleep:${h.sleepHours.toFixed(1)}h`)
+        const hours = getSleepHours(h)
+        if (hours != null) parts.push(`Sleep:${hours.toFixed(1)}h`)
         if (h.recoveryScore) parts.push(`Rec:${h.recoveryScore}%`)
         if (h.readiness) parts.push(`Ready:${h.readiness}`)
         return parts.join(' ')
@@ -281,7 +290,7 @@ export async function analyzeWellness(wellnessId: string, userId: string) {
 
         - HRV (SDNN): ${wellness.hrvSdnn ? wellness.hrvSdnn + ' ms' : 'N/A'}
 
-        - Sleep: ${wellness.sleepHours} hours (Score: ${wellness.sleepScore})
+        - Sleep: ${sleepHours} hours (Score: ${wellness.sleepScore})
 
         - Readiness: ${readinessLabel}
 
@@ -319,7 +328,7 @@ export async function analyzeWellness(wellnessId: string, userId: string) {
     30-DAY AVERAGES:
     - Average HRV (rMSSD): ${Math.round(history.reduce((acc, curr) => acc + (curr.hrv || 0), 0) / (history.filter((h) => h.hrv).length || 1))} ms
     - Average RHR: ${Math.round(history.reduce((acc, curr) => acc + (curr.restingHr || 0), 0) / (history.filter((h) => h.restingHr).length || 1))} bpm
-    - Average Sleep: ${(history.reduce((acc, curr) => acc + (curr.sleepHours || 0), 0) / (history.filter((h) => h.sleepHours).length || 1)).toFixed(1)} hours
+    - Average Sleep: ${(historySleepHours.reduce((acc, hours) => acc + hours, 0) / (historySleepHours.length || 1)).toFixed(1)} hours
 
     TASK:
     Provide a comprehensive analysis of the athlete's recovery status and readiness to train.
