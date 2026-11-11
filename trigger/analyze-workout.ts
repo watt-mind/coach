@@ -147,6 +147,10 @@ export const analyzeWorkoutTask = task({
       // Logic Check: If AUTOMATIC, ensure aiAutoAnalyzeWorkouts is enabled
       if (source === 'AUTOMATIC' && !user?.aiAutoAnalyzeWorkouts) {
         logger.log('EXIT: Auto-analyze workouts disabled for user.')
+        await prisma.workout.updateMany({
+          where: { id: workoutId, aiAnalysisStatus: 'PENDING' },
+          data: { aiAnalysisStatus: 'NOT_STARTED' }
+        })
         return { success: true, skipped: true, reason: 'AUTO_ANALYZE_DISABLED' }
       }
 
