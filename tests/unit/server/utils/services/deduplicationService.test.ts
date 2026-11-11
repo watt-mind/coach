@@ -221,7 +221,7 @@ describe('deduplicationService.findProposedLink', () => {
         completionStatus: true
       }
     })
-    expect(result).toEqual({ id: 'planned-1', title: 'VO2 Max Mixer' })
+    expect(result).toEqual({ id: 'planned-1', title: 'VO2 Max Mixer', type: 'Ride' })
   })
 })
 
