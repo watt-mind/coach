@@ -48,12 +48,23 @@ export async function findMatchingPlannedWorkoutForWorkout(
     return null
   }
 
-  const candidate = candidates[0]
-  if (candidates.length === 1 && candidate) {
-    return candidate
+  const workoutType = (workout.type || '').toLowerCase()
+
+  if (candidates.length === 1) {
+    const soleCandidate = candidates[0]
+    if (
+      soleCandidate &&
+      workoutTypeMatchesPlan(workoutType, (soleCandidate.type || '').toLowerCase())
+    ) {
+      return soleCandidate
+    }
+
+    console.log(
+      `Single planned workout found for ${workout.date.toISOString()} but type '${workout.type}' does not match planned type '${soleCandidate?.type}'. Skipping auto-link.`
+    )
+    return null
   }
 
-  const workoutType = (workout.type || '').toLowerCase()
   const typeMatches = candidates.filter((plannedWorkout) =>
     workoutTypeMatchesPlan(workoutType, (plannedWorkout.type || '').toLowerCase())
   )
