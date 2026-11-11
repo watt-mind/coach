@@ -1,4 +1,5 @@
 import { task } from '@trigger.dev/sdk/v3'
+import { formatInTimeZone } from 'date-fns-tz'
 import { prisma } from '../server/utils/db'
 import { getUserTimezone, getUserLocalDate } from '../server/utils/date'
 import type { UltrahumanSettings } from '../server/utils/ultrahuman'
@@ -46,7 +47,8 @@ export const pollUltrahumanTask = task({
         const userId = integration.userId
         const timezone = await getUserTimezone(userId)
         const userNow = getUserLocalDate(timezone, now)
-        const userHour = userNow.getUTCHours() // 0-23 in user's local time (normalized to UTC date object)
+        // userNow carries a calendar date at UTC midnight, not the current local time.
+        const userHour = Number(formatInTimeZone(now, timezone, 'H'))
 
         let shouldTrigger = false
 
