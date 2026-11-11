@@ -136,12 +136,14 @@ export const deduplicateWorkoutsTask = task({
           dryRun: true,
           duplicateGroups: enrichedGroups,
           workoutsDeleted: 0,
-          workoutsKept: 0
+          workoutsKept: 0,
+          groupsSkipped: 0
         }
       }
 
       let deletedCount = 0
       let keptCount = 0
+      let groupsSkipped = 0
       const processedPrimaryWorkoutIds = new Set<string>()
 
       for (const group of duplicateGroups) {
@@ -159,6 +161,7 @@ export const deduplicateWorkoutsTask = task({
         })
 
         const result = await deduplicationService.mergeDuplicateGroup(group)
+        if (result.skipped) groupsSkipped += 1
         deletedCount += result.deletedCount
         keptCount += result.keptCount
         processedPrimaryWorkoutIds.add(group.bestWorkoutId)
@@ -193,7 +196,8 @@ export const deduplicateWorkoutsTask = task({
         success: true,
         duplicateGroups: duplicateGroups.length,
         workoutsDeleted: deletedCount,
-        workoutsKept: keptCount
+        workoutsKept: keptCount,
+        groupsSkipped
       }
     } catch (error) {
       logger.error('Error deduplicating workouts', { error })
