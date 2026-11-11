@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import { getServerSession } from '../../../utils/session'
 import { prisma } from '../../../utils/db'
 import { metabolicService } from '../../../utils/services/metabolicService'
@@ -105,6 +104,14 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  const previousPlannedWorkoutId = (workout as { plannedWorkoutId?: string | null })
+    .plannedWorkoutId
+
+  // Repeated link is idempotent — already linked to the requested plan.
+  if (previousPlannedWorkoutId === plannedWorkoutId) {
+    return { success: true }
+  }
+
   try {
     await prisma.$transaction(async (tx) => {
       // Link the workout to the planned workout
@@ -123,6 +130,28 @@ export default defineEventHandler(async (event) => {
           completionStatus: 'COMPLETED'
         }
       })
+
+      // Reconcile the previous plan when relinking: only reset it when no
+      // other workout remains linked to it. Stays inside the same transaction
+      // so a failed relink rolls back atomically.
+      if (previousPlannedWorkoutId && previousPlannedWorkoutId !== plannedWorkoutId) {
+        const otherLinkedWorkouts = await tx.workout.count({
+          where: {
+            plannedWorkoutId: previousPlannedWorkoutId,
+            id: { not: workoutId }
+          }
+        })
+
+        if (otherLinkedWorkouts === 0) {
+          await tx.plannedWorkout.update({
+            where: { id: previousPlannedWorkoutId },
+            data: {
+              completed: false,
+              completionStatus: 'PENDING'
+            }
+          })
+        }
+      }
     })
 
     // REACTIVE: Trigger fueling plan update for the workout date
