@@ -526,6 +526,68 @@ describe('IntervalsService syncActivityStream activity-specific zones', () => {
     mockStreamPersistence()
   })
 
+  it.each([true, false])(
+    'uses the real resolver with a distinct default profile (specific=%s)',
+    async (specific) => {
+      mockStoredWorkoutType('Run')
+      mockStreams([90, 150, 150], [100, 200, 200])
+      const actual = await vi.importActual<
+        typeof import('../../../../../server/utils/repositories/sportSettingsRepository')
+      >('../../../../../server/utils/repositories/sportSettingsRepository')
+      const defaultProfile = {
+        isDefault: true,
+        types: [],
+        hrZones: [{ name: 'Default', min: 0, max: 500 }],
+        powerZones: [{ name: 'Default', min: 0, max: 1000 }]
+      }
+      const profiles = [
+        defaultProfile,
+        ...(specific
+          ? [
+              {
+                isDefault: false,
+                types: ['Run'],
+                ftp: 250,
+                lthr: 170,
+                hrZones: runHrZones,
+                powerZones: runPowerZones
+              }
+            ]
+          : [])
+      ]
+      const resolver = {
+        ...actual.sportSettingsRepository,
+        getByUserId: vi.fn().mockResolvedValue(profiles)
+      }
+      vi.mocked(sportSettingsRepository.getForActivityType).mockImplementation((user, type) =>
+        resolver.getForActivityType(user, type)
+      )
+      vi.mocked(sportSettingsRepository.getDefault).mockResolvedValue(defaultProfile as any)
+      await IntervalsService.syncActivityStream(userId, workoutId, activityId)
+      expect(resolver.getByUserId).toHaveBeenCalledWith(userId, undefined)
+      const payload = vi.mocked(workoutStreamRepository.upsert).mock.calls[0]?.[1] as any
+      expect(payload.hrZoneTimes).toEqual(specific ? [1, 2] : [3])
+      expect(payload.powerZoneTimes).toEqual(specific ? [1, 2] : [3])
+    }
+  )
+
+  it.each(['both', 'hr', 'power'])(
+    'uses built-in defaults for empty user arrays (%s)',
+    async (empty) => {
+      mockStoredWorkoutType('Run')
+      mockStreams([130, 150], [100, 200])
+      vi.mocked(sportSettingsRepository.getForActivityType).mockResolvedValue({
+        hrZones: empty === 'power' ? runHrZones : [],
+        powerZones: empty === 'hr' ? runPowerZones : []
+      } as any)
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({ hrZones: [], powerZones: [] } as any)
+      await IntervalsService.syncActivityStream(userId, workoutId, activityId)
+      const payload = vi.mocked(workoutStreamRepository.upsert).mock.calls[0]?.[1] as any
+      expect(payload.hrZoneTimes).toEqual(empty === 'power' ? [0, 2] : [0, 1, 1, 0, 0])
+      expect(payload.powerZoneTimes).toEqual(empty === 'hr' ? [1, 1] : [1, 0, 1, 0, 0])
+    }
+  )
+
   it('uses activity-specific running zones instead of default zones', async () => {
     mockStoredWorkoutType('Run')
     mockStreams([90, 150, 150], [100, 200, 200])

@@ -753,8 +753,18 @@ export const IntervalsService = {
         where: { id: userId },
         select: { hrZones: true, powerZones: true }
       })
-      if (hrZones.length === 0) hrZones = (user?.hrZones as any[]) || DEFAULT_HR_ZONES
-      if (powerZones.length === 0) powerZones = (user?.powerZones as any[]) || DEFAULT_POWER_ZONES
+      if (hrZones.length === 0) {
+        hrZones =
+          Array.isArray(user?.hrZones) && user.hrZones.length > 0
+            ? (user.hrZones as any[])
+            : DEFAULT_HR_ZONES
+      }
+      if (powerZones.length === 0) {
+        powerZones =
+          Array.isArray(user?.powerZones) && user.powerZones.length > 0
+            ? (user.powerZones as any[])
+            : DEFAULT_POWER_ZONES
+      }
     }
     await yieldTaskHeartbeat()
 
