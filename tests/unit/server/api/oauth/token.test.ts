@@ -13,7 +13,7 @@ vi.stubGlobal('createError', (err: any) => {
 
 const getAuthCode = vi.fn()
 const deleteAuthCode = vi.fn()
-const createToken = vi.fn()
+const redeemAuthCode = vi.fn()
 const verifyClient = vi.fn()
 const rotateRefreshToken = vi.fn()
 
@@ -21,7 +21,7 @@ vi.mock('../../../../../server/utils/repositories/oauthRepository', () => ({
   oauthRepository: {
     getAuthCode,
     deleteAuthCode,
-    createToken,
+    redeemAuthCode,
     verifyClient,
     rotateRefreshToken
   }
@@ -67,7 +67,7 @@ describe('POST /api/oauth/token MCP resource binding', () => {
     expect(result).toMatchObject({
       error: 'invalid_target'
     })
-    expect(createToken).not.toHaveBeenCalled()
+    expect(redeemAuthCode).not.toHaveBeenCalled()
   })
 
   it('issues MCP tokens when resource matches', async () => {
@@ -82,7 +82,7 @@ describe('POST /api/oauth/token MCP resource binding', () => {
       codeChallengeMethod: 'S256',
       app: { id: 'app-1', clientId: 'client-1', isPublicClient: true }
     })
-    createToken.mockResolvedValue({
+    redeemAuthCode.mockResolvedValue({
       accessToken: 'access-1',
       refreshToken: 'refresh-1',
       refreshTokenExpiresAt: new Date(Date.now() + 86400000),
@@ -115,7 +115,7 @@ describe('POST /api/oauth/token MCP resource binding', () => {
       }
     })
 
-    expect(createToken).toHaveBeenCalledWith({
+    expect(redeemAuthCode).toHaveBeenCalledWith('code-1', {
       appId: 'app-1',
       userId: 'user-1',
       scopes: ['profile:read', 'offline_access'],
@@ -153,7 +153,7 @@ describe('POST /api/oauth/token MCP resource binding', () => {
         app: { id: 'app-1', clientId: 'client-1', isPublicClient: true }
       })
       // MCP token records can retain an expiry even when no refresh token was issued.
-      createToken.mockResolvedValue({
+      redeemAuthCode.mockResolvedValue({
         accessToken: 'access-1',
         refreshToken: offlineAccess ? 'refresh-1' : null,
         refreshTokenExpiresAt: new Date(Date.now() + 86_400_000),
@@ -171,14 +171,14 @@ describe('POST /api/oauth/token MCP resource binding', () => {
         }
       })
 
-      expect(createToken).toHaveBeenCalledWith({
+      expect(redeemAuthCode).toHaveBeenCalledWith('code-1', {
         appId: 'app-1',
         userId: 'user-1',
         scopes,
         resource,
         includeRefreshToken: offlineAccess
       })
-      expect(deleteAuthCode).toHaveBeenCalledWith('code-1')
+      expect(deleteAuthCode).not.toHaveBeenCalled()
       const serialized = JSON.parse(JSON.stringify(result))
       expect(serialized).toMatchObject({
         access_token: 'access-1',

@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import { oauthRepository } from '../../utils/repositories/oauthRepository'
 import { normalizeResourceUrl } from '../../utils/oauth/resource'
 
@@ -87,7 +86,7 @@ export default defineEventHandler(async (event) => {
 
     const includeRefreshToken = authCode.scopes.includes('offline_access')
 
-    const token = await oauthRepository.createToken({
+    const token = await oauthRepository.redeemAuthCode(code, {
       appId: app.id,
       userId: authCode.userId,
       scopes: authCode.scopes,
@@ -95,7 +94,9 @@ export default defineEventHandler(async (event) => {
       includeRefreshToken
     })
 
-    await oauthRepository.deleteAuthCode(code)
+    if (!token) {
+      return sendOAuthError(event, 'invalid_grant', 'Invalid or expired authorization code')
+    }
 
     return serializeTokenResponse(token, includeRefreshToken)
   }

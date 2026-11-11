@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../db'
 import bcrypt from 'bcrypt'
 import { v4 as uuidv4 } from 'uuid'
@@ -284,19 +285,43 @@ export const oauthRepository = {
     }
   },
 
-  async createToken(data: {
-    appId: string
-    userId: string
-    scopes: string[]
-    resource?: string
-    includeRefreshToken?: boolean
-  }) {
+  async redeemAuthCode(
+    code: string,
+    data: {
+      appId: string
+      userId: string
+      scopes: string[]
+      resource?: string
+      includeRefreshToken?: boolean
+    }
+  ) {
+    return prisma.$transaction(async (tx) => {
+      // The conditional delete is the database-enforced single-use claim.
+      // A failed token/consent write rolls it back with the rest of the exchange.
+      const claimed = await tx.oAuthAuthCode.deleteMany({
+        where: { code, appId: data.appId, userId: data.userId, expiresAt: { gt: new Date() } }
+      })
+      if (claimed.count === 0) return null
+      return this.createToken(data, tx)
+    })
+  },
+
+  async createToken(
+    data: {
+      appId: string
+      userId: string
+      scopes: string[]
+      resource?: string
+      includeRefreshToken?: boolean
+    },
+    db: Prisma.TransactionClient = prisma
+  ) {
     const crypto = await import('node:crypto')
     const accessToken = crypto.randomBytes(32).toString('hex')
     const refreshToken =
       data.includeRefreshToken === false ? null : crypto.randomBytes(32).toString('hex')
 
-    await prisma.oAuthConsent.upsert({
+    await db.oAuthConsent.upsert({
       where: {
         userId_appId: {
           userId: data.userId,
@@ -313,7 +338,7 @@ export const oauthRepository = {
       }
     })
 
-    return prisma.oAuthToken.create({
+    return db.oAuthToken.create({
       data: {
         accessToken,
         refreshToken,
