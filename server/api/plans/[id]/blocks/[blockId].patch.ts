@@ -42,7 +42,11 @@ export default defineEventHandler(async (event) => {
     }
   })
 
-  if (!existingBlock || (existingBlock.plan as any).userId !== user.id) {
+  if (
+    !existingBlock ||
+    existingBlock.trainingPlanId !== planId ||
+    (existingBlock.plan as any).userId !== user.id
+  ) {
     throw createError({ statusCode: 404, message: 'Block not found' })
   }
 
