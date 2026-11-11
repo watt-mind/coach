@@ -26,13 +26,19 @@ concurrency:
 # Job names `Typecheck`, `Lint` and `Unit tests` are required status checks on
 # develop/master branch protection — do not rename them.
 #
-# Self-hosted runner slots are the bottleneck (PR runs spend more time queued
-# than executing), so keep the job count low: anything that takes seconds rides
-# along in an existing job instead of paying ~1 min of setup on its own runner.
+# Runner pool: the persistent `watt-mind-runner-*` runners (`shadow` + `runner`
+# labels), not the ephemeral `linux-container` pool. That pool is shared with
+# other repos and scales from zero, so a job waited ~100s for a runner even when
+# the pool was idle and a median of ~17 min under load, for ~4 min of work; these
+# runners pick a job up in ~2s. See CW-917 for the measurements before moving
+# these jobs again.
+#
+# Keep the job count low all the same: anything that takes seconds rides along
+# in an existing job instead of occupying a runner of its own.
 jobs:
   typecheck:
     name: Typecheck
-    runs-on: [self-hosted, linux-container]
+    runs-on: [self-hosted, shadow, runner]
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -47,14 +53,13 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: [self-hosted, linux-container]
+    runs-on: [self-hosted, shadow, runner]
     timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node + pnpm
-        id: setup
         uses: ./.github/actions/setup-node-pnpm
         with:
           nuxt-prepare: 'true'
@@ -62,23 +67,15 @@ jobs:
       - name: Run ESLint
         run: pnpm lint
 
-      # The only job that saves the pnpm store (it is the shortest one, so the
-      # upload stays off the critical path). Saving from every job made all but
-      # one fail the cache reservation after ~20s of compression each.
-      - name: Prune pnpm store
-        if: steps.setup.outputs.cache-hit != 'true'
-        run: pnpm store prune
-
-      - name: Save pnpm store
-        if: steps.setup.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ steps.setup.outputs.store-path }}
-          key: ${{ steps.setup.outputs.cache-key }}
+      # No pnpm store upload here. On these runners an uncached `pnpm install`
+      # takes ~10s, less than restoring the ~440 MB store archive did. The store
+      # sits under each runner's own RUNNER_TEMP and the cache version includes
+      # that path, so saving would upload one archive per runner per PR into a
+      # repository cache that is already over its 10 GB limit.
 
   unit-tests:
     name: Unit tests
-    runs-on: [self-hosted, linux-container]
+    runs-on: [self-hosted, shadow, runner]
     timeout-minutes: 20
     steps:
       - name: Checkout code
