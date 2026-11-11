@@ -73,22 +73,26 @@ describe('useUserStore Pinia Store', () => {
       .fn()
       .mockResolvedValueOnce({
         profile: { id: 'stale' },
-        dataSyncStatus: null,
-        missingFields: []
+        dataSyncStatus: { latestWellnessDate: '2026-11-01' },
+        missingFields: ['weight', 'height']
       })
       .mockResolvedValueOnce({
         profile: { id: 'fresh' },
-        dataSyncStatus: null,
-        missingFields: []
+        dataSyncStatus: { latestWellnessDate: '2026-11-11' },
+        missingFields: ['height']
       })
     vi.stubGlobal('$fetch', fetchMock)
 
     const store = useUserStore()
     await store.fetchProfile()
     expect(store.profile).toEqual({ id: 'stale' })
+    expect(store.dataSyncStatus).toEqual({ latestWellnessDate: '2026-11-01' })
+    expect(store.missingFields).toEqual(['weight', 'height'])
 
     await store.fetchProfile(true)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(store.profile).toEqual({ id: 'fresh' })
+    expect(store.dataSyncStatus).toEqual({ latestWellnessDate: '2026-11-11' })
+    expect(store.missingFields).toEqual(['height'])
   })
 })

@@ -238,7 +238,11 @@ describe('Dashboard sync completion forces profile refresh (CW-852)', () => {
         return { integrations: [] }
       }
       if (url === '/api/profile/dashboard') {
-        return { profile: { id: 'fresh-profile' }, dataSyncStatus: null, missingFields: [] }
+        return {
+          profile: { id: 'fresh-profile', ftp: 250 },
+          dataSyncStatus: { latestWellnessDate: '2026-11-11' },
+          missingFields: ['height']
+        }
       }
       if (url === '/api/user/onboarding-status') {
         return {
@@ -296,34 +300,45 @@ describe('Dashboard sync completion forces profile refresh (CW-852)', () => {
     await mountPage()
     const userStore = useUserStore()
     userStore.profile = { id: 'stale-profile', ftp: 200 } as any
+    userStore.dataSyncStatus = { latestWellnessDate: '2026-11-01' }
+    userStore.missingFields = ['weight', 'height']
     fetchMock.mockClear()
     return userStore
   }
 
   it('forces profile refresh when ingest-all completes despite a populated cache', async () => {
-    await primePopulatedCache()
+    const userStore = await primePopulatedCache()
 
     await fireCompleted('ingest-all', { output: { success: true, failedCount: 0, results: [] } })
     await flushPromises()
 
     expect(profileFetchCount()).toBeGreaterThan(0)
+    expect(userStore.profile).toEqual({ id: 'fresh-profile', ftp: 250 })
+    expect(userStore.dataSyncStatus).toEqual({ latestWellnessDate: '2026-11-11' })
+    expect(userStore.missingFields).toEqual(['height'])
   })
 
   it('forces profile refresh when ingest-intervals completes despite a populated cache', async () => {
-    await primePopulatedCache()
+    const userStore = await primePopulatedCache()
 
     await fireCompleted('ingest-intervals', { output: { success: true } })
     await flushPromises()
 
     expect(profileFetchCount()).toBeGreaterThan(0)
+    expect(userStore.profile).toEqual({ id: 'fresh-profile', ftp: 250 })
+    expect(userStore.dataSyncStatus).toEqual({ latestWellnessDate: '2026-11-11' })
+    expect(userStore.missingFields).toEqual(['height'])
   })
 
   it('forces profile refresh when ingest-strava completes despite a populated cache', async () => {
-    await primePopulatedCache()
+    const userStore = await primePopulatedCache()
 
     await fireCompleted('ingest-strava', { output: { success: true } })
     await flushPromises()
 
     expect(profileFetchCount()).toBeGreaterThan(0)
+    expect(userStore.profile).toEqual({ id: 'fresh-profile', ftp: 250 })
+    expect(userStore.dataSyncStatus).toEqual({ latestWellnessDate: '2026-11-11' })
+    expect(userStore.missingFields).toEqual(['height'])
   })
 })
