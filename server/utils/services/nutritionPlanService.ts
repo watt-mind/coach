@@ -984,6 +984,11 @@ export const nutritionPlanService = {
     const grouped = new Map<string, any>()
 
     for (const meal of eligibleMeals) {
+      // Ingredients retain the full recipe at persistence time. Apply only this row's
+      // saved share; excluded sibling rows must not redistribute their allocation.
+      const ratio = meal.mealJson?.allocation?.ratio
+      const allocationRatio =
+        typeof ratio === 'number' && Number.isFinite(ratio) && ratio >= 0 && ratio <= 1 ? ratio : 1
       for (const ingredient of meal.mealJson.ingredients as any[]) {
         const name = normalizeIngredientName(ingredient?.item || ingredient?.name)
         const unit = String(ingredient?.unit || '').trim()
@@ -993,7 +998,7 @@ export const nutritionPlanService = {
         // Ingredients come from AI-generated mealJson, so a quantity of 'two' is possible.
         // `Number(x || 0)` guards null but not that, and a single NaN propagates through every
         // later `+=` for the ingredient - the whole aggregated row renders as NaN.
-        const quantity = toFiniteNumber(ingredient?.quantity)
+        const quantity = toFiniteNumber(ingredient?.quantity) * allocationRatio
         const existing = grouped.get(key)
 
         if (!existing) {
