@@ -1,7 +1,49 @@
 import { defineStore, skipHydrate } from 'pinia'
 
-const ACT_AS_COOKIE_NAME = 'coach_wattz_act_as_user'
+export const ACT_AS_COOKIE_NAME = 'coach_wattz_act_as_user'
 const ACT_AS_DASHBOARD_PATH = '/dashboard'
+
+/**
+ * Read the act-as identity from the cookie — the only persistence the server
+ * reads. On the server this comes from the request header via `useCookie`
+ * (SSR-safe); on the client it is parsed from `document.cookie` directly so
+ * manual writes via `persistActAsCookie` (and test setup) are always fresh
+ * without depending on a cached `useCookie` ref (CW-644).
+ *
+ * Returns the decoded ID or `null` when absent/empty. Never throws — outside
+ * a Nuxt context (or with a malformed value) it safely yields `null`.
+ */
+function readActAsCookieId(): string | null {
+  if (import.meta.client) {
+    if (typeof document === 'undefined') return null
+    const match = document.cookie.match(new RegExp(`(?:^|; )${ACT_AS_COOKIE_NAME}=([^;]*)`))
+    const captured = match?.[1]
+    if (captured == null) return null
+    const raw = captured.trim()
+    if (!raw) return null
+    try {
+      const decoded = decodeURIComponent(raw).trim()
+      return decoded || null
+    } catch {
+      return raw || null
+    }
+  }
+
+  try {
+    const raw = useCookie<string | null>(ACT_AS_COOKIE_NAME).value
+    if (raw == null) return null
+    const text = String(raw).trim()
+    if (!text) return null
+    try {
+      const decoded = decodeURIComponent(text).trim()
+      return decoded || null
+    } catch {
+      return text || null
+    }
+  } catch {
+    return null
+  }
+}
 
 function persistActAsCookie(userId: string | null) {
   if (!import.meta.client) return
@@ -35,25 +77,31 @@ export interface PendingActAsRequest {
 }
 
 export const useCoachingStore = defineStore('coaching', () => {
-  // `skipHydrate` is load-bearing, not decoration (CW-637).
+  // Identity source of truth is the `coach_wattz_act_as_user` cookie (CW-644).
   //
   // `app/plugins/coaching-interceptor.ts` has no `.client` suffix, so it is
-  // universal and instantiates this store during SSR. The localStorage restore
-  // below is inside `if (import.meta.client)`, so the value Pinia serialises
-  // into the SSR payload is always `null`. On the client, @pinia/nuxt assigns
-  // `pinia.state.value = nuxtApp.payload.pinia`, and pinia's `createSetupStore`
-  // then walks every writable ref and applies `prop.value = initialState[key]`
-  // *after* the setup body has run — clobbering the restore with that `null`.
+  // universal and instantiates this store during SSR. Previously the store
+  // restored from localStorage on the client only, while SSR always serialised
+  // `null` — so SSR rendered `isCoachingMode=false` while the client flipped
+  // to `true`, changing coach selectors on library pages after hydration.
+  // Reading the cookie on both sides gives SSR and the initial client the
+  // same identity, so `isCoachingMode` agrees and selectors do not diverge.
   //
-  // The visible result was that `isCoachingMode` was false on the client after
-  // every full page load, so `CoachingBanner` never rendered, while the
-  // `coach_wattz_act_as_user` cookie kept the *server* impersonating. That
-  // combination — server impersonating, no client exit affordance — is what
-  // "no way out" actually was; the duplicate banner mounts were a red herring.
+  // The cookie is intent only, never authorization: `server/utils/session.ts`
+  // still validates the coaching relationship before impersonating (read-only
+  // here). Stale localStorage must never recreate an absent cookie or override
+  // a different one — the cookie always wins (CW-644).
   //
-  // Opting these two refs out of hydration lets the localStorage restore stand.
-  const actingAsUserId = skipHydrate(ref<string | null>(null))
-  const actingAsUserName = skipHydrate(ref<string | null>(null))
+  // `skipHydrate` history: CW-637 added it to stop SSR `null`s wiping the
+  // localStorage restore. Cookie hydration now makes it unnecessary for the
+  // ID (SSR serialises the cookie value, so hydration re-applies the same
+  // ID). It is retained on the display name only: the name cache lives in
+  // localStorage with no SSR source, and the banner that renders it is
+  // `ClientOnly`, so skipping its hydration preserves the cached name without
+  // affecting SSR agreement (which depends on the ID alone).
+  const initialActAsId = readActAsCookieId()
+  const actingAsUserId = ref<string | null>(initialActAsId)
+  const actingAsUserName = skipHydrate(ref<string | null>(initialActAsId))
 
   /**
    * Act-as switches identity for the whole app and survives reloads, so it is
@@ -62,14 +110,34 @@ export const useCoachingStore = defineStore('coaching', () => {
    */
   const pendingActAs = ref<PendingActAsRequest | null>(null)
 
-  // Load from localStorage on init
+  // Resolve the display name on the client only. The cached name accompanies
+  // the matching ID; any other cached value falls back to the ID itself so a
+  // stale name for a different athlete is never displayed (CW-644). When no
+  // cookie exists, stale legacy keys are cleared so a cached ID alone can
+  // never silently start impersonation.
   if (import.meta.client) {
-    const savedId = localStorage.getItem('coaching_act_as_id')
-    const savedName = localStorage.getItem('coaching_act_as_name')
-    if (savedId) {
-      actingAsUserId.value = savedId
-      actingAsUserName.value = savedName
-      persistActAsCookie(savedId)
+    if (initialActAsId) {
+      const savedId = localStorage.getItem('coaching_act_as_id')
+      const savedName = localStorage.getItem('coaching_act_as_name')
+      if (savedId === initialActAsId && savedName) {
+        actingAsUserName.value = savedName
+      } else {
+        actingAsUserName.value = initialActAsId
+        try {
+          localStorage.setItem('coaching_act_as_id', initialActAsId)
+          localStorage.setItem('coaching_act_as_name', initialActAsId)
+        } catch {
+          // Storage unavailable — the cookie remains the authority.
+        }
+      }
+    } else {
+      actingAsUserName.value = null
+      try {
+        localStorage.removeItem('coaching_act_as_id')
+        localStorage.removeItem('coaching_act_as_name')
+      } catch {
+        // Storage unavailable — nothing to clean.
+      }
     }
   }
 
