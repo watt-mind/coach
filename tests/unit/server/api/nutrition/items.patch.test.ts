@@ -6,6 +6,8 @@ import {
   nutritionRepository
 } from '../../../../../server/utils/repositories/nutritionRepository'
 
+import { nutritionPlanService } from '../../../../../server/utils/services/nutritionPlanService'
+
 vi.stubGlobal('defineEventHandler', (fn: any) => fn)
 vi.stubGlobal('getRouterParam', (event: any, name: string) => event.params?.[name])
 vi.stubGlobal('readBody', async (event: any) => event.body)
@@ -127,6 +129,45 @@ describe('PATCH /api/nutrition/:id/items', () => {
       expect(nutritionRepository.updateWithVersionCheck).toHaveBeenCalledTimes(1)
     })
   })
+
+  it.each(['delete', 'update'] as const)(
+    'reconciles after persisting a food %s',
+    async (action) => {
+      const nutrition = baseNutrition()
+      vi.mocked(nutritionRepository.getById).mockResolvedValue(nutrition as any)
+      vi.mocked(nutritionRepository.updateWithVersionCheck).mockResolvedValue(nutrition as any)
+      const handler = await getHandler()
+      await handler({
+        params: { id: 'n1' },
+        body:
+          action === 'delete'
+            ? { action, mealType: 'breakfast', itemId: 'item-1' }
+            : {
+                action,
+                mealType: 'breakfast',
+                item: {
+                  ...nutrition.breakfast[0],
+                  logged_at: '2026-07-21T15:00:00Z'
+                }
+              }
+      } as any)
+      const data = vi.mocked(nutritionRepository.updateWithVersionCheck).mock.calls[0]![2]
+      expect(data.breakfast).toEqual(
+        action === 'delete'
+          ? []
+          : [expect.objectContaining({ id: 'item-1', logged_at: '2026-07-21T15:00:00Z' })]
+      )
+      expect(nutritionPlanService.reconcileLoggedMealsForDate).toHaveBeenCalledWith(
+        'user-1',
+        nutrition.date
+      )
+      expect(
+        vi.mocked(nutritionRepository.updateWithVersionCheck).mock.invocationCallOrder[0]
+      ).toBeLessThan(
+        vi.mocked(nutritionPlanService.reconcileLoggedMealsForDate).mock.invocationCallOrder[0]!
+      )
+    }
+  )
 
   describe('optimistic concurrency', () => {
     it('returns a 409 conflict instead of silently overwriting a concurrent change', async () => {

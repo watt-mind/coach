@@ -889,10 +889,37 @@ export const nutritionPlanService = {
     for (const meal of primaryPlan.meals || []) {
       if (String(meal.status || '').toUpperCase() === 'SKIPPED') continue
 
+      const mealJson = (meal.mealJson as any) || {}
+      const automaticallyLogged = Boolean(meal.actualNutritionItemId || mealJson.isLogged)
+      // Explicit completion without intake linkage must not become automatic.
+      if (String(meal.status || '').toUpperCase() === 'DONE' && !automaticallyLogged) continue
+
       const matched = this.matchLoggedItemToPlanMeal(meal, windows, loggedItems, usedIds)
-      if (!matched) continue
+      if (!matched) {
+        if (!automaticallyLogged) continue
+        updates.push(
+          prisma.nutritionPlanMeal.update({
+            where: { id: meal.id },
+            data: {
+              status: mealJson.completedAt ? 'DONE' : 'PLANNED',
+              actualNutritionItemId: null,
+              mealJson: { ...mealJson, isLogged: false, loggedAt: null },
+              updatedAt: new Date()
+            }
+          })
+        )
+        continue
+      }
 
       usedIds.add(matched.id)
+      const loggedAt = matched.logged_at || matched.date || null
+      if (
+        meal.status === 'DONE' &&
+        meal.actualNutritionItemId === matched.id &&
+        mealJson.isLogged === true &&
+        mealJson.loggedAt === loggedAt
+      )
+        continue
       updates.push(
         prisma.nutritionPlanMeal.update({
           where: { id: meal.id },
