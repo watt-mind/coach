@@ -80,8 +80,8 @@ describe('analysis status when automatic analysis is disabled after enqueue', ()
     prisma.emailPreference.findUnique.mockResolvedValue(null)
     prisma.athleteJourneyEvent.findMany.mockResolvedValue([])
     prisma.workout.updateMany.mockImplementation(async ({ where, data }: any) => {
-      if (where.id !== 'workout-1' || where.analysisStatus !== status) return { count: 0 }
-      status = data.analysisStatus
+      if (where.id !== 'workout-1' || where.aiAnalysisStatus !== status) return { count: 0 }
+      status = data.aiAnalysisStatus
       return { count: 1 }
     })
   })
@@ -92,8 +92,8 @@ describe('analysis status when automatic analysis is disabled after enqueue', ()
     expect(result).toEqual({ success: true, skipped: true, reason: 'AUTO_ANALYZE_DISABLED' })
     expect(status).toBe('NOT_STARTED')
     expect(prisma.workout.updateMany).toHaveBeenCalledWith({
-      where: { id: 'workout-1', analysisStatus: 'PENDING' },
-      data: { analysisStatus: 'NOT_STARTED' }
+      where: { id: 'workout-1', aiAnalysisStatus: 'PENDING' },
+      data: { aiAnalysisStatus: 'NOT_STARTED' }
     })
     expect(updateStatus).not.toHaveBeenCalled()
   })
