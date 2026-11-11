@@ -247,12 +247,18 @@ export async function refreshFitbitToken(integration: Integration): Promise<Inte
   })
 
   if (!response.ok) {
-    const errorText = await response.text()
-    console.error('Fitbit token refresh failed:', errorText)
     throw new Error(`Failed to refresh Fitbit token: ${response.status} ${response.statusText}`)
   }
 
   const tokenData: FitbitTokenResponse = await response.json()
+  if (
+    !tokenData.access_token ||
+    !tokenData.refresh_token ||
+    !Number.isFinite(tokenData.expires_in) ||
+    tokenData.expires_in <= 0
+  ) {
+    throw new Error('Invalid Fitbit token refresh response')
+  }
   const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000)
 
   const updatedIntegration = await prisma.integration.update({
@@ -266,7 +272,15 @@ export async function refreshFitbitToken(integration: Integration): Promise<Inte
     }
   })
 
-  return updatedIntegration
+  // Publish credentials only after persistence succeeds, keeping sequential callers in sync.
+  Object.assign(integration, {
+    accessToken: updatedIntegration.accessToken,
+    refreshToken: updatedIntegration.refreshToken,
+    expiresAt: updatedIntegration.expiresAt,
+    scope: updatedIntegration.scope,
+    externalUserId: updatedIntegration.externalUserId
+  })
+  return integration
 }
 
 function isTokenExpired(integration: Integration): boolean {
