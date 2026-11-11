@@ -2,6 +2,7 @@ import { getServerSession } from '../../../utils/session'
 import { prisma } from '../../../utils/db'
 import {
   getLibraryAccessContext,
+  getLibraryOwnerScope,
   getReadableLibraryOwnerIds,
   groupLibraryItemsByOwner,
   parseLibraryScope
@@ -36,7 +37,19 @@ export default defineEventHandler(async (event) => {
   }
 
   if (type === 'favorites') {
-    where.favorites = { some: { userId } }
+    // Favorite membership never grants read access: intersect the session
+    // user's favorites with the currently readable templates (own scope,
+    // PUBLIC, or TEAM with an ACTIVE membership) on every request.
+    where.AND = [
+      { favorites: { some: { userId } } },
+      {
+        OR: [
+          { userId: { in: ownerIds } },
+          { visibility: 'PUBLIC' },
+          { visibility: 'TEAM', teamId: { in: teamIds } }
+        ]
+      }
+    ]
   } else if (type === 'team') {
     where.OR = [
       { teamId: { in: teamIds }, visibility: 'TEAM' },
@@ -73,7 +86,7 @@ export default defineEventHandler(async (event) => {
     ...template,
     isFavorite: template.favorites.length > 0,
     ownerUserId: template.userId,
-    ownerScope: template.userId === context.actorUserId ? 'coach' : 'athlete',
+    ownerScope: getLibraryOwnerScope(context, template.userId),
     isEditable: template.userId === userId
   }))
 
