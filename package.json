@@ -32,7 +32,7 @@
     "@tiptap/vue-3": "^3.27.3",
     "@tolgee/format-icu": "^7.1.1",
     "@tolgee/vue": "^7.1.1",
-    "@tolgee/web": "^7.1.2",
+    "@tolgee/web": "^7.3.0",
     "@trigger.dev/core": "4.5.4",
     "@trigger.dev/sdk": "4.5.4",
     "@types/uuid": "^11.0.0",
