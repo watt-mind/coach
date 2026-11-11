@@ -194,7 +194,7 @@ describe('deduplicationService.findProposedLink', () => {
 
   it('matches planned workouts using the athlete local day, not the workout timestamp', async () => {
     vi.mocked(prisma.plannedWorkout.findMany).mockResolvedValue([
-      { id: 'planned-1', title: 'VO2 Max Mixer' }
+      { id: 'planned-1', title: 'VO2 Max Mixer', type: 'Ride' }
     ] as any)
 
     const result = await deduplicationService.findProposedLink({
@@ -221,7 +221,7 @@ describe('deduplicationService.findProposedLink', () => {
         completionStatus: true
       }
     })
-    expect(result).toEqual({ id: 'planned-1', title: 'VO2 Max Mixer' })
+    expect(result).toEqual({ id: 'planned-1', title: 'VO2 Max Mixer', type: 'Ride' })
   })
 })
 
