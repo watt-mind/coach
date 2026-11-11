@@ -131,6 +131,10 @@
     watts: 'W',
     heartrate: 'bpm',
     cadence: 'rpm',
+    // Display unit, not storage: the `velocity` stream is persisted in m/s
+    // (see `metresPerSecondToKmh` in `shared/units.ts`) and converted to km/h
+    // server-side before it reaches this chart, so the unit that goes with
+    // the rendered value really is km/h (CW-382).
     velocity: 'km/h',
     altitude: 'm',
     grade: '%',
