@@ -555,10 +555,10 @@ export const startCommand = new Command('start')
         }
 
         if (provider === 'oauth-generic') {
-          const { appName, clientId, payload, logId, secretMatched } = job.data
+          const { appName, logId, secretMatched } = job.data
           console.log(
             chalk.cyan(`[OAuthJob ${job.id}]`) +
-              ` Received push for ${chalk.bold(appName)} (${clientId}). Secret Matched: ${secretMatched ? chalk.green('YES') : chalk.red('NO')}`
+              ` Received push for ${chalk.bold(appName)} (LogID: ${logId}). Secret Matched: ${secretMatched ? chalk.green('YES') : chalk.red('NO')}`
           )
 
           if (logId) {
