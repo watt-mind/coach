@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   CONCURRENT_UPDATE_CONFLICT,
   nutritionRepository
@@ -8,6 +8,7 @@ import { prisma } from '../../../../../server/utils/db'
 
 vi.mock('../../../../../server/utils/db', () => ({
   prisma: {
+    $transaction: vi.fn(),
     nutrition: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -26,6 +27,10 @@ describe('nutritionRepository', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   describe('getPendingAnalysis', () => {
@@ -66,6 +71,79 @@ describe('nutritionRepository', () => {
       )
     })
   })
+  it.each([0, 1000])(
+    'rejects a stale upload after a committed edit with the clock %i ms behind the snapshot',
+    async (clockLag) => {
+      const timestamp = new Date('2026-07-21T12:00:00.000Z')
+      vi.spyOn(Date, 'now').mockReturnValue(timestamp.getTime() - clockLag)
+      let row = {
+        id: 'n1',
+        userId,
+        date: new Date('2026-07-21'),
+        updatedAt: timestamp,
+        breakfast: [{ id: 'existing', calories: 100 }],
+        calories: 100
+      }
+      // Model Prisma's conditional update and @updatedAt fallback, not scripted conflicts.
+      vi.mocked(prisma.nutrition.update).mockImplementation(async ({ where, data }: any) => {
+        if (where.updatedAt.getTime() !== row.updatedAt.getTime()) {
+          throw new Prisma.PrismaClientKnownRequestError('stale', {
+            code: 'P2025',
+            clientVersion: '7'
+          })
+        }
+        row = { ...row, ...data, updatedAt: data.updatedAt ?? new Date(Date.now()) }
+        return structuredClone(row) as any
+      })
+      vi.mocked(prisma.$transaction).mockImplementation(async (callback: any) => callback(prisma))
+      const stale = structuredClone(row)
+      const edited = await nutritionRepository.updateWithVersionCheck(row.id, stale.updatedAt, {
+        breakfast: [{ id: 'existing', calories: 200 }],
+        calories: 200,
+        // Callers cannot accidentally retain or roll back the token.
+        updatedAt: timestamp
+      })
+      expect(edited).not.toBe(CONCURRENT_UPDATE_CONFLICT)
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1)
+      const committed = structuredClone(row)
+      expect(
+        await nutritionRepository.saveWithVersionCheck(
+          userId,
+          row.date,
+          stale,
+          {
+            breakfast: [...stale.breakfast, { id: 'upload', calories: 50 }],
+            calories: 150
+          },
+          'oauth:app'
+        )
+      ).toBe(CONCURRENT_UPDATE_CONFLICT)
+      expect(row).toEqual(committed)
+      expect(
+        await nutritionRepository.updateWithVersionCheck(row.id, stale.updatedAt, {
+          calories: 999
+        })
+      ).toBe(CONCURRENT_UPDATE_CONFLICT)
+      const fresh = structuredClone(row)
+      await nutritionRepository.saveWithVersionCheck(
+        userId,
+        row.date,
+        fresh,
+        {
+          breakfast: [...fresh.breakfast, { id: 'upload', calories: 50 }],
+          calories: 250
+        },
+        'oauth:app'
+      )
+      expect(row.breakfast).toEqual([
+        { id: 'existing', calories: 200 },
+        { id: 'upload', calories: 50 }
+      ])
+      expect(row.calories).toBe(250)
+      expect(row.updatedAt.getTime()).toBeGreaterThan(fresh.updatedAt.getTime())
+    }
+  )
+
   describe('saveWithVersionCheck', () => {
     const date = new Date('2026-07-21')
     const snapshot = { id: 'n1', updatedAt: new Date('2026-07-21') }

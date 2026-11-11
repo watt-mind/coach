@@ -185,7 +185,12 @@ export const nutritionRepository = {
       return await prisma.$transaction(async (tx) => {
         return tx.nutrition.update({
           where: { id, updatedAt: expectedUpdatedAt },
-          data
+          data: {
+            ...data,
+            // Prisma @updatedAt may equal the snapshot within the same millisecond.
+            // Advance in the guarded statement, even if the clock moved backwards.
+            updatedAt: new Date(Math.max(Date.now(), expectedUpdatedAt.getTime() + 1))
+          }
         })
       })
     } catch (error) {
