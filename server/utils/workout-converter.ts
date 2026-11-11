@@ -70,6 +70,22 @@ interface WorkoutData {
   } | null
 }
 
+// Download formats express power either as FTP fractions or absolute watts.
+// Keep relative targets (including legacy omitted units) in their existing representation.
+function downloadPower(power: WorkoutStep['power'], ftp: number, absolute: boolean) {
+  const target = power || { value: 0 }
+  const inWatts = target.units === 'w' || target.units === 'watts'
+  const convert = (value: number) =>
+    absolute ? (inWatts ? value : value * ftp) : inWatts ? value / ftp : value
+  return {
+    ...target,
+    value: convert(target.value ?? 0),
+    range: target.range
+      ? { start: convert(target.range.start ?? 0), end: convert(target.range.end ?? 0) }
+      : undefined
+  }
+}
+
 export const WorkoutConverter = {
   toZWO(workout: WorkoutData): string {
     const root = create({ version: '1.0', encoding: 'UTF-8' })
@@ -92,7 +108,7 @@ export const WorkoutConverter = {
 
     workout.steps.forEach((step) => {
       // Safely access power
-      const power = step.power || { value: 0 }
+      const power = downloadPower(step.power, workout.ftp || 250, false)
       const duration = step.durationSeconds || step.duration || 0
       const isRamp = power.ramp === true
 
@@ -171,7 +187,7 @@ export const WorkoutConverter = {
     // 3. Workout Steps
     workout.steps.forEach((step, index) => {
       // Safely access power
-      const power = step.power || { value: 0 }
+      const power = downloadPower(step.power, workout.ftp || 250, true)
       const isRamp = !!power.range
 
       // Target Value: Power
@@ -199,18 +215,16 @@ export const WorkoutConverter = {
         // We'll skip complex HR export logic for FIT for now or use open targets.
         targetType = 'open' // 2
       } else {
-        // Let's calculate ABSOLUTE WATTS if FTP is provided, otherwise fallback to a default 250W.
-        const ftp = workout.ftp || 250
-
+        // Power has already been converted to absolute watts.
         if (isRamp && power.range) {
-          customTargetValueLow = Math.round((power.range.start ?? 0) * ftp)
-          customTargetValueHigh = Math.round((power.range.end ?? 0) * ftp)
+          customTargetValueLow = Math.round(power.range.start ?? 0)
+          customTargetValueHigh = Math.round(power.range.end ?? 0)
         } else {
           // Steady: Low and High define the zone window.
           // Usually target - 5% to target + 5%
-          const val = (power.value || 0) * ftp
-          customTargetValueLow = Math.round(val - 10)
-          customTargetValueHigh = Math.round(val + 10)
+          const val = power.value || 0
+          customTargetValueLow = val === 0 ? 0 : Math.round(val - 10)
+          customTargetValueHigh = val === 0 ? 0 : Math.round(val + 10)
         }
       }
 
@@ -258,7 +272,7 @@ export const WorkoutConverter = {
       const endTime = currentTime + durationMins
 
       // Safely access power
-      const power = step.power || { value: 0 }
+      const power = downloadPower(step.power, workout.ftp || 250, false)
 
       // Calculate start and end power as percentage (0-100)
       let startPercent: number
@@ -305,17 +319,17 @@ export const WorkoutConverter = {
       const endTime = currentTime + durationMins
 
       // Safely access power
-      const power = step.power || { value: 0 }
+      const power = downloadPower(step.power, ftp, true)
 
       // Calculate start and end power in Watts
       let startWatts: number
       let endWatts: number
 
       if (power.range) {
-        startWatts = (power.range.start ?? 0) * ftp
-        endWatts = (power.range.end ?? 0) * ftp
+        startWatts = power.range.start ?? 0
+        endWatts = power.range.end ?? 0
       } else {
-        startWatts = (power.value || 0) * ftp
+        startWatts = power.value || 0
         endWatts = startWatts
       }
 

@@ -1,6 +1,10 @@
+import { FitWriter } from '@markw65/fit-file-writer'
 import { describe, expect, it, vi } from 'vitest'
 
-import { serializeCanonicalForProvider } from '../../../../server/utils/canonical-workout-serializer'
+import {
+  serializeCanonicalForProvider,
+  serializeCanonicalDownload
+} from '../../../../server/utils/canonical-workout-serializer'
 
 vi.stubGlobal('createError', (err: any) => {
   const error = new Error(err.message)
@@ -73,5 +77,57 @@ describe('canonical provider export adapter', () => {
         }
       })
     ).toThrow(/pace targets are rejected/)
+  })
+})
+
+describe('canonical absolute power downloads', () => {
+  it.each(['w', 'watts'])('uses frozen FTP and preserves %s scalar and ramp inputs', (units) => {
+    const structure = {
+      steps: [
+        { type: 'Active', durationSeconds: 60, power: { value: 200, units } },
+        { type: 'Active', durationSeconds: 60, power: { value: 0.8, units: '%' } },
+        {
+          type: 'Warmup',
+          durationSeconds: 60,
+          power: { range: { start: 100, end: 200 }, ramp: true, units }
+        }
+      ]
+    }
+    const options = {
+      title: 'Frozen',
+      description: '',
+      structure,
+      workout: { lastGenerationSettingsSnapshot: { thresholds: { ftp: 250 } }, user: { ftp: 400 } },
+      liveUserFtp: 400
+    }
+    const original = structuredClone(options)
+    const zwo = serializeCanonicalDownload({ ...options, format: 'zwo' }) as string
+    expect(zwo).toContain('Power="0.8"')
+    expect(zwo).toContain('PowerLow="0.4" PowerHigh="0.8"')
+    expect(serializeCanonicalDownload({ ...options, format: 'mrc' })).toContain(
+      '0.00\t80\r\n1.00\t80'
+    )
+    expect(serializeCanonicalDownload({ ...options, format: 'erg' })).toContain(
+      '0.00\t200\r\n1.00\t200'
+    )
+    const writer = vi.spyOn(FitWriter.prototype, 'writeMessage')
+    try {
+      expect(serializeCanonicalDownload({ ...options, format: 'fit' })).toBeInstanceOf(Uint8Array)
+      const steps = writer.mock.calls.filter(([name]) => name === 'workout_step')
+      expect(steps.map(([, data]) => data)).toMatchObject([
+        { custom_target_value_low: 190, custom_target_value_high: 210 },
+        { custom_target_value_low: 190, custom_target_value_high: 210 },
+        { custom_target_value_low: 100, custom_target_value_high: 200 }
+      ])
+    } finally {
+      writer.mockRestore()
+    }
+    expect(serializeCanonicalDownload({ ...options, format: 'mrc' })).toContain(
+      '2.00\t40\r\n3.00\t80'
+    )
+    expect(serializeCanonicalDownload({ ...options, format: 'erg' })).toContain(
+      '2.00\t100\r\n3.00\t200'
+    )
+    expect(options).toEqual(original)
   })
 })
