@@ -186,7 +186,12 @@ jobs:
     # Reports build and release outcomes. A CI-only failure skips the release
     # and was never notified before either, so it stays quiet here too.
     if: always() && needs.build.result != 'cancelled' && (needs.build.result == 'failure' || needs.release.result != 'skipped')
-    runs-on: [self-hosted, linux-container]
+    # Same pool as `release`, NOT `linux-container`: that pool queues for
+    # minutes (median 230 s, max 945 s for this 5 s job), and this workflow's
+    # `cancel-in-progress: false` concurrency group is held until the last job
+    # finishes — so the wait for a Notify runner delayed the next deploy on the
+    # branch after the release was already done (CW-918).
+    runs-on: [self-hosted, linux-vm]
     timeout-minutes: 5
     env:
       DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
