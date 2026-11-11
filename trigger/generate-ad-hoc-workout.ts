@@ -1,4 +1,5 @@
 import './init'
+import { createHash, randomUUID } from 'node:crypto'
 import { logger, task } from '@trigger.dev/sdk/v3'
 import { generateStructuredAnalysis, buildWorkoutSummary } from '../server/utils/gemini'
 import {
@@ -13,7 +14,7 @@ import { getUserTimezone, getStartOfDaysAgoUTC, formatUserDate } from '../server
 import { filterGoalsForContext } from '../server/utils/goal-context'
 import { enqueuePlannedWorkoutStructureGeneration } from '../server/utils/planned-workout-structure-trigger'
 import { autoUploadPlannedWorkoutToIntervalsIfEnabled } from '../server/utils/intervals-sync'
-import { registerTaskHandler } from '../server/utils/task-registry'
+import { getCurrentTaskExecution, registerTaskHandler } from '../server/utils/task-registry'
 
 const adHocWorkoutSchema = {
   type: 'object',
@@ -63,8 +64,25 @@ interface AdHocWorkoutSuggestion {
 
 type GenerateAdHocWorkoutPayload = { userId: string; date: Date | string; preferences?: any }
 
-export async function runGenerateAdHocWorkout(payload: GenerateAdHocWorkoutPayload) {
+export async function runGenerateAdHocWorkout(
+  payload: GenerateAdHocWorkoutPayload,
+  executionContext?: { runId?: string }
+) {
   const { userId, date, preferences } = payload
+
+  const runId = executionContext?.runId || getCurrentTaskExecution()?.runId
+  // The uploader replaces externalId with the provider ID, so use the immutable
+  // primary key as the durable execution receipt. Include userId for isolation.
+  const digest = runId
+    ? createHash('sha256')
+        .update(JSON.stringify(['ad-hoc', userId, runId]))
+        .digest('hex')
+    : null
+  const workoutId = digest
+    ? `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`
+    : randomUUID()
+  const existing = await prisma.plannedWorkout.findUnique({ where: { id: workoutId } })
+  if (existing) return finishStructureGeneration(userId, existing.id)
 
   const timezone = await getUserTimezone(userId)
   // Calculate today based on user's timezone date string forced to UTC midnight
@@ -217,53 +235,83 @@ export async function runGenerateAdHocWorkout(payload: GenerateAdHocWorkoutPaylo
   )
 
   // Create Planned Workout
-  const plannedWorkout = await prisma.plannedWorkout.create({
-    data: {
-      userId,
-      date: today, // Correctly aligned to user's local day start (UTC)
-      title: suggestion.title,
-      description: `${suggestion.description}\n\nObjective: ${suggestion.objective}\n${
-        Array.isArray(suggestion.executionCues) && suggestion.executionCues.length > 0
-          ? `Execution Cues: ${suggestion.executionCues.join(' | ')}\n`
-          : ''
-      }\nReasoning: ${suggestion.reasoningText}`,
-      type: suggestion.type,
-      durationSec: suggestion.durationMinutes * 60,
-      tss: suggestion.targetTss,
-      syncStatus: 'LOCAL_ONLY', // Mark as local initially
-      externalId: `adhoc-${userId}-${Date.now()}`, // Generate unique external ID
-      managedBy: 'COACH_WATTS'
-    }
-  })
+  let plannedWorkout
+  try {
+    plannedWorkout = await prisma.plannedWorkout.create({
+      data: {
+        id: workoutId,
+        userId,
+        date: today, // Correctly aligned to user's local day start (UTC)
+        title: suggestion.title,
+        description: `${suggestion.description}\n\nObjective: ${suggestion.objective}\n${
+          Array.isArray(suggestion.executionCues) && suggestion.executionCues.length > 0
+            ? `Execution Cues: ${suggestion.executionCues.join(' | ')}\n`
+            : ''
+        }\nReasoning: ${suggestion.reasoningText}`,
+        type: suggestion.type,
+        durationSec: suggestion.durationMinutes * 60,
+        tss: suggestion.targetTss,
+        syncStatus: 'LOCAL_ONLY', // Mark as local initially
+        externalId: `adhoc-${workoutId}`,
+        managedBy: 'COACH_WATTS'
+      }
+    })
+  } catch (error) {
+    // A concurrent attempt (or lost create acknowledgement) may have committed.
+    // Only recover when the exact execution receipt is present.
+    const committed = await prisma.plannedWorkout.findUnique({ where: { id: workoutId } })
+    if (!committed) throw error
+    return finishStructureGeneration(userId, committed.id)
+  }
 
   logger.log('Created planned workout', { id: plannedWorkout.id })
 
-  await autoUploadPlannedWorkoutToIntervalsIfEnabled({
-    id: plannedWorkout.id,
-    userId,
-    externalId: plannedWorkout.externalId,
-    date: plannedWorkout.date,
-    startTime: plannedWorkout.startTime,
-    title: plannedWorkout.title,
-    description: plannedWorkout.description,
-    type: plannedWorkout.type,
-    durationSec: plannedWorkout.durationSec,
-    tss: plannedWorkout.tss,
-    managedBy: plannedWorkout.managedBy
-  })
+  try {
+    await autoUploadPlannedWorkoutToIntervalsIfEnabled({
+      id: plannedWorkout.id,
+      userId,
+      externalId: plannedWorkout.externalId,
+      date: plannedWorkout.date,
+      startTime: plannedWorkout.startTime,
+      title: plannedWorkout.title,
+      description: plannedWorkout.description,
+      type: plannedWorkout.type,
+      durationSec: plannedWorkout.durationSec,
+      tss: plannedWorkout.tss,
+      managedBy: plannedWorkout.managedBy
+    })
+  } catch (error) {
+    // The provider may already have accepted CREATE. Keep the local receipt and
+    // never repeat the upload automatically on task replay.
+    logger.warn('Ad-hoc workout upload outcome unknown', { workoutId, error })
+  }
 
+  return finishStructureGeneration(userId, plannedWorkout.id)
+}
+
+async function finishStructureGeneration(userId: string, plannedWorkoutId: string) {
   // Trigger Structure Generation. The revision prevents any older job from
   // replacing this newly requested structure.
-  const queued = await enqueuePlannedWorkoutStructureGeneration({
-    userId,
-    plannedWorkoutId: plannedWorkout.id,
-    source: 'ad-hoc'
-  })
+  let queued
+  try {
+    queued = await enqueuePlannedWorkoutStructureGeneration({
+      userId,
+      plannedWorkoutId,
+      source: 'ad-hoc'
+    })
+  } catch (error) {
+    return {
+      success: true,
+      plannedWorkoutId,
+      structure_generation: 'failed',
+      structure_error: error instanceof Error ? error.message : String(error)
+    }
+  }
 
   if (queued.status === 'failed') {
     return {
       success: true,
-      plannedWorkoutId: plannedWorkout.id,
+      plannedWorkoutId,
       structure_generation: 'failed',
       structure_error: queued.error
     }
@@ -271,7 +319,7 @@ export async function runGenerateAdHocWorkout(payload: GenerateAdHocWorkoutPaylo
 
   return {
     success: true,
-    plannedWorkoutId: plannedWorkout.id,
+    plannedWorkoutId,
     structure_generation: 'queued',
     run_id: queued.runId
   }
@@ -282,5 +330,6 @@ registerTaskHandler('generate-ad-hoc-workout', runGenerateAdHocWorkout)
 export const generateAdHocWorkoutTask = task({
   id: 'generate-ad-hoc-workout',
   maxDuration: 300,
-  run: runGenerateAdHocWorkout
+  run: (payload: GenerateAdHocWorkoutPayload, { ctx }) =>
+    runGenerateAdHocWorkout(payload, { runId: ctx.run.id })
 })
