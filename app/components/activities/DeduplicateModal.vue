@@ -265,11 +265,31 @@
 
         <!-- Success State -->
         <div v-else-if="state === 'success'" class="text-center py-6">
-          <UIcon name="i-heroicons-check-circle" class="w-12 h-12 mx-auto text-green-500 mb-2" />
-          <h3 class="font-bold text-gray-900 dark:text-gray-100 text-lg">Deduplication Complete</h3>
+          <UIcon
+            :name="
+              resultStats.skipped > 0
+                ? 'i-heroicons-exclamation-triangle'
+                : 'i-heroicons-check-circle'
+            "
+            class="w-12 h-12 mx-auto mb-2"
+            :class="resultStats.skipped > 0 ? 'text-amber-500' : 'text-green-500'"
+          />
+          <h3 class="font-bold text-gray-900 dark:text-gray-100 text-lg">
+            {{
+              resultStats.skipped > 0 ? 'Completed with Skipped Groups' : 'Deduplication Complete'
+            }}
+          </h3>
           <p class="text-gray-600 dark:text-gray-300 mt-2">
             Successfully merged <strong>{{ resultStats.kept }}</strong> activities and marked
             <strong>{{ resultStats.deleted }}</strong> as duplicates.
+          </p>
+          <p
+            v-if="resultStats.skipped > 0"
+            role="status"
+            class="text-amber-600 dark:text-amber-400 mt-2"
+          >
+            {{ resultStats.skipped }} duplicate groups were skipped because records changed during
+            merging. Scan again to review the current activities.
           </p>
         </div>
       </div>
@@ -343,6 +363,9 @@
 
         <!-- Success Footer -->
         <template v-else-if="state === 'success'">
+          <UButton v-if="resultStats.skipped > 0" color="warning" @click="startScan"
+            >Scan Again</UButton
+          >
           <UButton
             color="primary"
             @click="
@@ -373,7 +396,7 @@
   type DedupeState = 'idle' | 'scanning' | 'review' | 'processing' | 'success'
   const state = ref<DedupeState>('idle')
   const duplicateGroups = ref<any[]>([])
-  const resultStats = ref({ kept: 0, deleted: 0 })
+  const resultStats = ref({ kept: 0, deleted: 0, skipped: 0 })
   const currentTaskId = ref<string | null>(null)
   const selectedGroups = ref<Set<string>>(new Set())
 
@@ -421,7 +444,8 @@
         } else if (state.value === 'processing') {
           resultStats.value = {
             kept: run.output.workoutsKept || 0,
-            deleted: run.output.workoutsDeleted || 0
+            deleted: run.output.workoutsDeleted || 0,
+            skipped: run.output.groupsSkipped || 0
           }
           state.value = 'success'
           emit('updated')
@@ -447,6 +471,10 @@
   }
 
   async function startScan() {
+    currentTaskId.value = null
+    duplicateGroups.value = []
+    selectedGroups.value = new Set()
+    resultStats.value = { kept: 0, deleted: 0, skipped: 0 }
     state.value = 'scanning'
     try {
       const res = await ($fetch as any)('/api/workouts/deduplicate', {
