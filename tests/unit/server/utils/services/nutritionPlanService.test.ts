@@ -932,3 +932,144 @@ describe('metabolicService.calculateFuelingPlansForRange batching (CW-83)', () =
     expect(buildDayFuelingPlan).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('reconcileLoggedMealsForDate stale automatic completion (CW-832)', () => {
+  const date = '2026-02-15'
+  const window = {
+    type: 'DAILY_BASE',
+    slotName: 'Breakfast',
+    startTime: '2026-02-15T07:00:00Z',
+    endTime: '2026-02-15T09:00:00Z'
+  }
+  let meals: any[]
+  let nutrition: any
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    meals = [
+      {
+        id: 'meal-1',
+        windowType: 'DAILY_BASE:breakfast',
+        status: 'DONE',
+        actualNutritionItemId: 'food-1',
+        mealJson: {
+          title: 'Oats',
+          ingredients: [{ item: 'Oats' }],
+          isLogged: true,
+          loggedAt: 'old'
+        }
+      }
+    ]
+    nutrition = {
+      id: 'nutrition-1',
+      breakfast: [],
+      lunch: [],
+      dinner: [],
+      snacks: [],
+      fuelingPlan: { windows: [window] }
+    }
+    vi.mocked(nutritionRepository.getByDate).mockImplementation(async () => nutrition)
+    vi.mocked(prisma.nutritionPlan.findMany).mockImplementation(async () => [{ meals }] as any)
+    vi.mocked(prisma.nutritionPlan.findFirst).mockImplementation(async () => ({ meals }) as any)
+    vi.mocked(prisma.nutrition.findUnique).mockImplementation(async () => nutrition)
+    vi.mocked(prisma.nutritionPlanMeal.update).mockImplementation((async ({ where, data }: any) => {
+      const meal = meals.find((meal) => meal.id === where.id)
+      Object.assign(meal, data)
+      return meal
+    }) as any)
+  })
+
+  const reconcile = () => nutritionPlanService.reconcileLoggedMealsForDate('user-1', date, 'UTC')
+
+  it.each(['deleted', 'moved'])(
+    'clears a %s automatic match and refreshes locks',
+    async (action) => {
+      if (action === 'moved')
+        nutrition.breakfast = [{ id: 'food-1', logged_at: '2026-02-15T12:00:00Z' }]
+      await reconcile()
+      expect(meals[0]).toMatchObject({
+        status: 'PLANNED',
+        actualNutritionItemId: null,
+        mealJson: {
+          title: 'Oats',
+          ingredients: [{ item: 'Oats' }],
+          isLogged: false,
+          loggedAt: null
+        }
+      })
+      expect(prisma.nutrition.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            fuelingPlan: {
+              windows: [
+                expect.objectContaining({
+                  isLocked: true,
+                  lockedMealId: 'meal-1',
+                  lockedMeal: expect.objectContaining({ isLogged: false, loggedAt: null })
+                })
+              ]
+            }
+          }
+        })
+      )
+      await reconcile()
+      expect(prisma.nutritionPlanMeal.update).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('replaces stale linkage once, never uses one food for two meals, and remains idempotent', async () => {
+    nutrition.breakfast = [{ id: 'replacement', logged_at: '2026-02-15T08:00:00Z' }]
+    meals.push({ ...meals[0], id: 'meal-2' })
+    await reconcile()
+    expect(meals[0]).toMatchObject({ status: 'DONE', actualNutritionItemId: 'replacement' })
+    expect(meals[1]).toMatchObject({ status: 'PLANNED', actualNutritionItemId: null })
+    const snapshot = structuredClone(meals)
+    await reconcile()
+    expect(meals).toEqual(snapshot)
+  })
+
+  it('preserves skipped and manual completion even when intake matches', async () => {
+    meals[0].status = 'SKIPPED'
+    meals.push({
+      id: 'manual',
+      windowType: 'DAILY_BASE:breakfast',
+      status: 'DONE',
+      actualNutritionItemId: null,
+      mealJson: { title: 'Manual', completedAt: 'explicit' }
+    })
+    nutrition.breakfast = [{ id: 'replacement', logged_at: '2026-02-15T08:00:00Z' }]
+    const snapshot = structuredClone(meals)
+    await reconcile()
+    expect(meals).toEqual(snapshot)
+    expect(prisma.nutritionPlanMeal.update).not.toHaveBeenCalled()
+  })
+
+  it('clears legacy logged markers without linkage and preserves explicit completion on linked meals', async () => {
+    meals[0].actualNutritionItemId = null
+    meals.push({
+      ...structuredClone(meals[0]),
+      id: 'explicit',
+      actualNutritionItemId: 'deleted',
+      mealJson: { ...meals[0].mealJson, completedAt: 'manual-completion' }
+    })
+    await reconcile()
+    expect(meals[0]).toMatchObject({
+      status: 'PLANNED',
+      actualNutritionItemId: null,
+      mealJson: { isLogged: false, loggedAt: null }
+    })
+    expect(meals[1]).toMatchObject({
+      status: 'DONE',
+      actualNutritionItemId: null,
+      mealJson: { completedAt: 'manual-completion', isLogged: false, loggedAt: null }
+    })
+  })
+
+  it('retains all state when no nutrition record exists', async () => {
+    nutrition = null
+    const snapshot = structuredClone(meals)
+    expect(await reconcile()).toEqual([])
+    expect(meals).toEqual(snapshot)
+    expect(prisma.nutrition.update).not.toHaveBeenCalled()
+  })
+})
