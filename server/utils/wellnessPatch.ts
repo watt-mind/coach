@@ -156,9 +156,21 @@ export async function handleWellnessPatch(event: H3Event) {
     }
   }
 
+  const clearedMetricKeys: Array<'weight' | 'body_fat_pct'> = []
+  if (body.weight === null) clearedMetricKeys.push('weight')
+  if (body.bodyFat === null) clearedMetricKeys.push('body_fat_pct')
+
   const changedFields = Object.keys(changes)
 
   if (changedFields.length === 0) {
+    if (clearedMetricKeys.length > 0) {
+      await bodyMeasurementService.recordWellnessMetrics(
+        user.id,
+        { id: wellness.id, date: wellness.date },
+        'manual_edit',
+        clearedMetricKeys
+      )
+    }
     return { success: true, wellness }
   }
 
@@ -189,7 +201,8 @@ export async function handleWellnessPatch(event: H3Event) {
         bodyFat: updated.bodyFat,
         rawJson: updated.rawJson
       },
-      'manual_edit'
+      'manual_edit',
+      clearedMetricKeys
     )
 
     return {

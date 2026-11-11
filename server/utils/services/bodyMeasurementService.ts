@@ -237,20 +237,41 @@ export const bodyMeasurementService = {
     await Promise.all(writes)
   },
 
-  async recordWellnessMetrics(userId: string, wellness: WellnessMeasurementInput, source: string) {
-    const recordedAt = wellness.date
-    const writes = extractWellnessBodyMeasurements(wellness).map((measurement) =>
-      this.recordEntry({
-        userId,
-        recordedAt,
-        metricKey: measurement.metricKey,
-        value: measurement.value,
-        unit: measurement.unit,
-        source,
-        sourceRefType: 'wellness',
-        sourceRefId: wellness.id
+  async recordWellnessMetrics(
+    userId: string,
+    wellness: WellnessMeasurementInput,
+    source: string,
+    clearedMetricKeys: Array<'weight' | 'body_fat_pct'> = []
+  ) {
+    // PATCH clears retire the linked metric across its original and manual-edit sources.
+    if (clearedMetricKeys.length > 0) {
+      await prisma.bodyMeasurementEntry.updateMany({
+        where: {
+          userId,
+          sourceRefType: 'wellness',
+          sourceRefId: wellness.id,
+          metricKey: { in: clearedMetricKeys },
+          isDeleted: false
+        },
+        data: { isDeleted: true }
       })
-    )
+    }
+    const recordedAt = wellness.date
+    const writes = extractWellnessBodyMeasurements(wellness)
+      // An explicit clear wins over provider rawJson fallback for this operation.
+      .filter((measurement) => !clearedMetricKeys.some((key) => key === measurement.metricKey))
+      .map((measurement) =>
+        this.recordEntry({
+          userId,
+          recordedAt,
+          metricKey: measurement.metricKey,
+          value: measurement.value,
+          unit: measurement.unit,
+          source,
+          sourceRefType: 'wellness',
+          sourceRefId: wellness.id
+        })
+      )
 
     await Promise.all(writes)
   }
