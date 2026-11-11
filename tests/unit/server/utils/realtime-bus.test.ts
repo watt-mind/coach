@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const state = vi.hoisted(() => ({
   clients: [] as any[],
   connectFails: false,
-  subscribeFails: false
+  subscribeFails: false,
+  deferConnect: false,
+  deferSubscribe: false
 }))
 vi.mock('ioredis', () => ({
   default: class extends EventEmitter {
@@ -12,10 +14,31 @@ vi.mock('ioredis', () => ({
     options: any
     connect = vi.fn(async () => {
       if (state.connectFails) throw new Error('offline')
+      this.status = 'connecting'
+      this.emit('connect')
+      if (state.deferConnect) {
+        await new Promise<void>((resolve, reject) => {
+          const ready = () => {
+            this.off('close', close)
+            resolve()
+          }
+          const close = () => {
+            this.off('ready', ready)
+            reject(new Error('closed'))
+          }
+          this.once('ready', ready)
+          this.once('close', close)
+        })
+      }
       this.status = 'ready'
     })
+    finishSubscribe = () => {}
     subscribe = vi.fn(async () => {
       if (state.subscribeFails) throw new Error('subscribe failed')
+      if (state.deferSubscribe)
+        await new Promise<void>((resolve) => {
+          this.finishSubscribe = resolve
+        })
       return 1
     })
     publish = vi.fn(async () => {
@@ -24,6 +47,10 @@ vi.mock('ioredis', () => ({
     })
     disconnect = vi.fn(() => {
       this.status = 'end'
+      queueMicrotask(() => {
+        this.emit('close')
+        this.emit('end')
+      })
     })
     constructor(_url: string, options: any) {
       super()
@@ -50,6 +77,7 @@ beforeEach(async () => {
   state.clients = []
   state.connectFails = false
   state.subscribeFails = false
+  state.deferConnect = state.deferSubscribe = false
   vi.stubEnv('REDIS_URL', 'redis://localhost/3')
   vi.stubEnv('NODE_ENV', 'test')
   vi.stubEnv('NITRO_BUILD', '')
@@ -166,6 +194,78 @@ describe('realtime Redis lifecycle', () => {
     expect(state.clients[0].subscribe).not.toHaveBeenCalled()
     expect(state.clients[0].eventNames()).toEqual([])
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('preserves internal connect settlement and isolates stop/start attempts', async () => {
+    state.deferConnect = true
+    const oldHandler = vi.fn()
+    const oldStart = bus.startRealtimeSubscription(oldHandler)
+    const oldClient = state.clients[0]
+    expect(oldClient.status).toBe('connecting')
+    expect(oldClient.listenerCount('ready')).toBe(1)
+    const stopping = bus.stopRealtimeSubscription()
+    // Bus listeners are gone, but ioredis must still observe close.
+    expect(oldClient.listenerCount('close')).toBe(1)
+    await stopping
+    state.deferConnect = false
+    const handler = vi.fn()
+    await Promise.all([
+      bus.startRealtimeSubscription(handler),
+      bus.startRealtimeSubscription(handler)
+    ])
+    await vi.runAllTicks()
+    await oldStart
+    expect(oldClient.eventNames()).toEqual([])
+    expect(oldClient.subscribe).not.toHaveBeenCalled()
+    receive(state.clients[1])
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(oldHandler).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['stop', 'end'])(
+    'settles pending subscribe on %s without disturbing replacement',
+    async (mode) => {
+      state.deferSubscribe = true
+      const oldStart = bus.startRealtimeSubscription(vi.fn())
+      await vi.advanceTimersByTimeAsync(0)
+      const oldClient = state.clients[0]
+      expect(oldClient.subscribe).toHaveBeenCalledTimes(1)
+      if (mode === 'stop') await bus.stopRealtimeSubscription()
+      else oldClient.emit('end')
+      await oldStart
+      state.deferSubscribe = false
+      const handler = vi.fn()
+      if (mode === 'end') await vi.advanceTimersByTimeAsync(250)
+      await Promise.all([
+        bus.startRealtimeSubscription(handler),
+        bus.startRealtimeSubscription(handler)
+      ])
+      oldClient.finishSubscribe()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(state.clients[1].subscribe).toHaveBeenCalledTimes(1)
+      expect(state.clients[1].listenerCount('message')).toBe(1)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it('negative control: removing internal listeners strands a pending connect', async () => {
+    const { default: Redis } = await import('ioredis')
+    state.deferConnect = true
+    const client = new Redis('redis://localhost')
+    let settled = false
+    void client.connect().then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      }
+    )
+    client.removeAllListeners()
+    client.disconnect()
+    await vi.runAllTicks()
+    expect(settled).toBe(false)
   })
 
   it.each(['development', 'production'])('preserves %s channel names', async (environment) => {

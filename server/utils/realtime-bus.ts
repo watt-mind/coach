@@ -66,8 +66,17 @@ let recoveryDelay = 250
 let generation = 0
 let eventHandler: ((event: { userId: string; data: any }) => void) | null = null
 
+const clientCleanup = new WeakMap<IORedis, Array<() => void>>()
+
+function ownListener(client: IORedis, event: string, listener: (...args: any[]) => void) {
+  client.on(event, listener)
+  clientCleanup.get(client)!.push(() => client.off(event, listener))
+}
+
 function dispose(client: IORedis) {
-  client.removeAllListeners()
+  for (const cleanup of clientCleanup.get(client) || []) cleanup()
+  clientCleanup.delete(client)
+  // ioredis owns ready/close listeners that settle its pending connect promise.
   client.disconnect()
 }
 
@@ -104,7 +113,8 @@ function createRedisClient(name: string) {
     retryStrategy: () => null
   })
 
-  client.on('error', (error) => {
+  clientCleanup.set(client, [])
+  ownListener(client, 'error', (error) => {
     logRealtimeEvent('bus', `${name}_redis_error`, {
       message: error.message
     })
@@ -218,8 +228,11 @@ export async function startRealtimeSubscription(
       subscriptionPromise = null
       scheduleRecovery()
     }
-    client.once('end', recover)
-    await pending
+    const cancelled = new Promise<void>((resolve) => {
+      clientCleanup.get(client)!.push(resolve)
+    })
+    ownListener(client, 'end', recover)
+    await Promise.race([pending, cancelled])
     if (generation !== attemptGeneration || subscriber !== client) return
 
     if (!subscriberHandler) {
@@ -250,10 +263,10 @@ export async function startRealtimeSubscription(
         }
       }
 
-      client.on('message', subscriberHandler)
+      ownListener(client, 'message', subscriberHandler)
     }
 
-    await client.subscribe(REALTIME_CHANNEL)
+    await Promise.race([client.subscribe(REALTIME_CHANNEL), cancelled])
     if (generation === attemptGeneration && subscriber === client) recoveryDelay = 250
   })().catch((error) => {
     if (generation !== attemptGeneration || subscriber !== attemptClient) return
