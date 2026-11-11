@@ -51,4 +51,44 @@ describe('useUserStore Pinia Store', () => {
     expect(store.user).toBeNull()
     expect(store.userLoading).toBe(false)
   })
+
+  it('returns the cached profile without refetching when not forced', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ profile: { id: 'cached' }, dataSyncStatus: null, missingFields: [] })
+    vi.stubGlobal('$fetch', fetchMock)
+
+    const store = useUserStore()
+    await store.fetchProfile()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    fetchMock.mockClear()
+    await store.fetchProfile()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(store.profile).toEqual({ id: 'cached' })
+  })
+
+  it('refetches the profile when force=true even with a populated cache (CW-852)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        profile: { id: 'stale' },
+        dataSyncStatus: null,
+        missingFields: []
+      })
+      .mockResolvedValueOnce({
+        profile: { id: 'fresh' },
+        dataSyncStatus: null,
+        missingFields: []
+      })
+    vi.stubGlobal('$fetch', fetchMock)
+
+    const store = useUserStore()
+    await store.fetchProfile()
+    expect(store.profile).toEqual({ id: 'stale' })
+
+    await store.fetchProfile(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(store.profile).toEqual({ id: 'fresh' })
+  })
 })

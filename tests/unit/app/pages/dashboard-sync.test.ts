@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import DashboardPage from '../../../../app/pages/dashboard.vue'
 import { useIntegrationStore } from '../../../../app/stores/integrations'
+import { useUserStore } from '../../../../app/stores/user'
 
 // `t` from @tolgee/vue is used both as a plain function in templates
 // (`t('key')`) and as `t.value('key')` inside computed()/plain functions in
@@ -224,5 +225,105 @@ describe('Dashboard sync failure handling (CW-39)', () => {
     expect(integrationStore.syncingData).toBe(false)
     expect(toastAdd.mock.calls.some((call) => call[0]?.color === 'warning')).toBe(true)
     expect(toastAdd.mock.calls.some((call) => call[0]?.color === 'error')).toBe(false)
+  })
+})
+
+describe('Dashboard sync completion forces profile refresh (CW-852)', () => {
+  const fetchMock = vi.fn()
+
+  function stubFetch() {
+    fetchMock.mockReset()
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/integrations/status') {
+        return { integrations: [] }
+      }
+      if (url === '/api/profile/dashboard') {
+        return { profile: { id: 'fresh-profile' }, dataSyncStatus: null, missingFields: [] }
+      }
+      if (url === '/api/user/onboarding-status') {
+        return {
+          signupMethod: 'unknown',
+          currentStep: 'connect_data',
+          steps: [],
+          importState: 'idle',
+          connectedProviders: [],
+          hasIntegration: false,
+          hasAnyData: false,
+          hasUsableData: false,
+          hasFirstInsight: false,
+          activationComplete: false,
+          showFullSetupHub: false,
+          showCompactSetupCard: false,
+          primaryProvider: null,
+          workoutCount: 0,
+          wellnessCount: 0,
+          nutritionCount: 0,
+          importErrorMessage: null,
+          hasConsent: true,
+          hasPrimaryGoal: true
+        }
+      }
+      throw new Error(`Unhandled fetch in test: ${url}`)
+    })
+    ;(fetchMock as any).raw = vi.fn().mockResolvedValue({ _data: null })
+    vi.stubGlobal('$fetch', fetchMock)
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    delete completedHandlers['ingest-all']
+    delete completedHandlers['ingest-intervals']
+    delete completedHandlers['ingest-strava']
+    delete failedHandlers['ingest-all']
+    delete failedHandlers['ingest-intervals']
+    delete failedHandlers['ingest-strava']
+    stubFetch()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function profileFetchCount() {
+    return fetchMock.mock.calls.filter(([url]) => url === '/api/profile/dashboard').length
+  }
+
+  // With a preloaded/populated cache, a plain fetchProfile() early-returns and
+  // never hits the network. Clearing the mock after priming the cache makes
+  // the forced refresh observable: only fetchProfile(true) produces a call.
+  async function primePopulatedCache() {
+    await mountPage()
+    const userStore = useUserStore()
+    userStore.profile = { id: 'stale-profile', ftp: 200 } as any
+    fetchMock.mockClear()
+    return userStore
+  }
+
+  it('forces profile refresh when ingest-all completes despite a populated cache', async () => {
+    await primePopulatedCache()
+
+    await fireCompleted('ingest-all', { output: { success: true, failedCount: 0, results: [] } })
+    await flushPromises()
+
+    expect(profileFetchCount()).toBeGreaterThan(0)
+  })
+
+  it('forces profile refresh when ingest-intervals completes despite a populated cache', async () => {
+    await primePopulatedCache()
+
+    await fireCompleted('ingest-intervals', { output: { success: true } })
+    await flushPromises()
+
+    expect(profileFetchCount()).toBeGreaterThan(0)
+  })
+
+  it('forces profile refresh when ingest-strava completes despite a populated cache', async () => {
+    await primePopulatedCache()
+
+    await fireCompleted('ingest-strava', { output: { success: true } })
+    await flushPromises()
+
+    expect(profileFetchCount()).toBeGreaterThan(0)
   })
 })
