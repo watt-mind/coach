@@ -18,7 +18,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const updated = await EmailDeliveryService.dispatch(id)
-    return { success: true, data: updated }
+    return { success: updated.status === 'SENT', data: updated }
   } catch (error: any) {
     console.error('Failed to manually send email:', error)
 
