@@ -19,6 +19,7 @@ vi.mock('../../../../../server/utils/auth-guard', () => ({
 
 vi.mock('../../../../../server/utils/db', () => ({
   prisma: {
+    $transaction: vi.fn(),
     bodyMeasurementEntry: {
       findFirst: vi.fn(),
       create: vi.fn(),
@@ -40,6 +41,7 @@ const getHandler = async () => {
 describe('PATCH /api/wellness/:id', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    vi.mocked(prisma.$transaction).mockImplementation(async (callback: any) => callback(prisma))
     vi.mocked(requireAuth).mockResolvedValue({ id: 'user-1' } as any)
     vi.mocked(prisma.wellness.findUnique).mockResolvedValue({
       id: '11111111-1111-4111-8111-111111111111',
@@ -202,6 +204,89 @@ describe('PATCH /api/wellness/:id', () => {
       data: expect.objectContaining({ metricKey: retained })
     })
   })
+
+  it.each(['retirement', 'surviving write', 'none'])(
+    'rolls back wellness, history and measurements on %s failure',
+    async (failure) => {
+      const id = '11111111-1111-4111-8111-111111111111'
+      let committed: any = {
+        wellness: {
+          id,
+          userId: 'user-1',
+          date: new Date('2026-03-04'),
+          weight: 70,
+          bodyFat: 18,
+          history: []
+        },
+        entries: [
+          {
+            id: 'entry-1',
+            userId: 'user-1',
+            sourceRefId: id,
+            metricKey: 'weight',
+            value: 70,
+            isDeleted: false
+          }
+        ]
+      }
+      const before = structuredClone(committed)
+      vi.mocked(prisma.wellness.findUnique).mockImplementation(async () =>
+        structuredClone(committed.wellness)
+      )
+      // Only the transaction client writes to the staged copy. Root writes commit immediately,
+      // so forgetting to pass tx cannot accidentally receive rollback semantics in this fixture.
+      vi.mocked(prisma.wellness.update).mockImplementation(async ({ data }: any) =>
+        Object.assign(committed.wellness, data)
+      )
+      vi.mocked(prisma.$transaction).mockImplementation(async (callback: any) => {
+        const staged = structuredClone(committed)
+        const tx = {
+          wellness: {
+            update: vi.fn(async ({ data }: any) => Object.assign(staged.wellness, data))
+          },
+          bodyMeasurementEntry: {
+            updateMany: vi.fn(async () => {
+              if (failure === 'retirement') throw new Error('retirement unavailable')
+              staged.entries[0].isDeleted = true
+              return { count: 1 }
+            }),
+            findFirst: vi.fn(async () => null),
+            create: vi.fn(async () => {
+              if (failure === 'surviving write') throw new Error('surviving write unavailable')
+              const entry = { id: 'new-body-fat', metricKey: 'body_fat_pct', value: 18 }
+              staged.entries.push(entry)
+              return entry
+            })
+          }
+        }
+        const result = await callback(tx)
+        committed = staged
+        return result
+      })
+      // Root delegates fail too: a writer escaping tx must not appear successful.
+      vi.mocked(prisma.bodyMeasurementEntry.updateMany).mockRejectedValue(
+        new Error('root retirement')
+      )
+      vi.mocked(prisma.bodyMeasurementEntry.create).mockRejectedValue(new Error('root write'))
+      const handler = await getHandler()
+      const patch = () => handler({ params: { id }, body: { weight: null } } as any)
+      if (failure === 'none') {
+        await expect(patch()).resolves.toMatchObject({ success: true })
+        expect(committed.wellness.weight).toBeNull()
+        expect(committed.wellness.history).toHaveLength(1)
+        expect(committed.entries[0].isDeleted).toBe(true)
+        expect(committed.entries[1]).toMatchObject({ metricKey: 'body_fat_pct', value: 18 })
+      } else {
+        await expect(patch()).rejects.toMatchObject({ statusCode: 500 })
+        expect(committed).toEqual(before)
+      }
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1)
+      expect(prisma.wellness.update).not.toHaveBeenCalled()
+      expect(prisma.bodyMeasurementEntry.updateMany).not.toHaveBeenCalled()
+      expect(prisma.bodyMeasurementEntry.findFirst).not.toHaveBeenCalled()
+      expect(prisma.bodyMeasurementEntry.create).not.toHaveBeenCalled()
+    }
+  )
 
   it('does not retire another user’s measurements', async () => {
     vi.mocked(prisma.wellness.findUnique).mockResolvedValue({ userId: 'other' } as any)

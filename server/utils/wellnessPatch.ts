@@ -183,27 +183,31 @@ export async function handleWellnessPatch(event: H3Event) {
   }
 
   try {
-    const updated = await prisma.wellness.update({
-      where: { id: wellness.id },
-      data: {
-        ...updateData,
-        lastSource: 'manual_edit',
-        history: [...existingHistory, historyEntry]
-      }
-    })
+    const updated = await prisma.$transaction(async (tx) => {
+      const updated = await tx.wellness.update({
+        where: { id: wellness.id },
+        data: {
+          ...updateData,
+          lastSource: 'manual_edit',
+          history: [...existingHistory, historyEntry]
+        }
+      })
 
-    await bodyMeasurementService.recordWellnessMetrics(
-      user.id,
-      {
-        id: updated.id,
-        date: updated.date,
-        weight: updated.weight,
-        bodyFat: updated.bodyFat,
-        rawJson: updated.rawJson
-      },
-      'manual_edit',
-      clearedMetricKeys
-    )
+      await bodyMeasurementService.recordWellnessMetrics(
+        user.id,
+        {
+          id: updated.id,
+          date: updated.date,
+          weight: updated.weight,
+          bodyFat: updated.bodyFat,
+          rawJson: updated.rawJson
+        },
+        'manual_edit',
+        clearedMetricKeys,
+        tx
+      )
+      return updated
+    })
 
     return {
       success: true,
