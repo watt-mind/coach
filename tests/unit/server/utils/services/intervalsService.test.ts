@@ -4,9 +4,13 @@ import {
   normalizeIntervalsWorkout,
   normalizeIntervalsPlannedWorkout,
   fetchIntervalsActivity,
-  fetchIntervalsWorkouts
+  fetchIntervalsWorkouts,
+  fetchIntervalsActivityStreams
 } from '../../../../../server/utils/intervals'
 import { workoutRepository } from '../../../../../server/utils/repositories/workoutRepository'
+import { sportSettingsRepository } from '../../../../../server/utils/repositories/sportSettingsRepository'
+import { workoutStreamRepository } from '../../../../../server/utils/repositories/workoutStreamRepository'
+import { DEFAULT_HR_ZONES, DEFAULT_POWER_ZONES } from '../../../../../server/utils/training-metrics'
 import { deduplicateWorkoutsTask } from '../../../../../trigger/deduplicate-workouts'
 import { triggerWorkoutDeduplicationIfEnabled } from '../../../../../server/utils/trigger-workout-deduplication'
 import { IntervalsService } from '../../../../../server/utils/services/intervalsService'
@@ -54,7 +58,9 @@ vi.mock('../../../../../server/utils/intervals', () => ({
   normalizeIntervalsPlannedWorkout: vi.fn(),
   normalizeIntervalsCalendarNote: vi.fn(),
   fetchIntervalsActivityStreams: vi.fn(),
-  fetchIntervalsAthlete: vi.fn()
+  fetchIntervalsAthlete: vi.fn(),
+  hasInvalidIntervalsElevationMetadata: vi.fn().mockReturnValue(false),
+  computeElevationGainFromAltitudeStream: vi.fn().mockReturnValue(null)
 }))
 
 vi.mock('../../../../../server/utils/repositories/workoutRepository', () => ({
@@ -67,7 +73,15 @@ vi.mock('../../../../../server/utils/repositories/workoutRepository', () => ({
 
 vi.mock('../../../../../server/utils/repositories/sportSettingsRepository', () => ({
   sportSettingsRepository: {
-    getForActivityType: vi.fn().mockResolvedValue({ paceZones: [{ min: 0, max: 1 }] })
+    getForActivityType: vi.fn().mockResolvedValue({ paceZones: [{ min: 0, max: 1 }] }),
+    getDefault: vi.fn().mockResolvedValue(null)
+  }
+}))
+
+vi.mock('../../../../../server/utils/repositories/workoutStreamRepository', () => ({
+  workoutStreamRepository: {
+    upsert: vi.fn(),
+    findByWorkoutId: vi.fn()
   }
 }))
 
@@ -464,5 +478,131 @@ describe('IntervalsService syncActivities deduplication', () => {
     )
 
     expect(triggerWorkoutDeduplicationIfEnabled).not.toHaveBeenCalled()
+  })
+})
+
+describe('IntervalsService syncActivityStream activity-specific zones', () => {
+  const userId = 'user-1'
+  const workoutId = 'w-zone'
+  const activityId = 'i-zone'
+
+  const runHrZones = [
+    { name: 'Z1', min: 0, max: 100 },
+    { name: 'Z2', min: 101, max: 200 }
+  ]
+  const runPowerZones = [
+    { name: 'Z1', min: 0, max: 150 },
+    { name: 'Z2', min: 151, max: 500 }
+  ]
+
+  function mockStreamPersistence() {
+    vi.mocked(workoutStreamRepository.upsert).mockResolvedValue({ id: 'ws-1' } as any)
+    vi.mocked(workoutStreamRepository.findByWorkoutId).mockResolvedValue({ id: 'ws-1' } as any)
+  }
+
+  function mockStreams(heartrate: number[], watts: number[]) {
+    vi.mocked(prisma.integration.findFirst).mockResolvedValue({ id: 'int-1' } as any)
+    vi.mocked(fetchIntervalsActivityStreams).mockResolvedValue({
+      time: { data: heartrate.map((_, i) => i) },
+      heartrate: { data: heartrate },
+      watts: { data: watts }
+    } as any)
+  }
+
+  function mockStoredWorkoutType(type: string | null) {
+    vi.mocked(prisma.workout.findUnique).mockImplementation(async (args: any) => {
+      if (args?.select?.type) return { type } as any
+      return {
+        averageWatts: 200,
+        maxWatts: 400,
+        normalizedPower: 210,
+        elevationGain: 0
+      } as any
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockStreamPersistence()
+  })
+
+  it('uses activity-specific running zones instead of default zones', async () => {
+    mockStoredWorkoutType('Run')
+    mockStreams([90, 150, 150], [100, 200, 200])
+    vi.mocked(sportSettingsRepository.getForActivityType).mockResolvedValue({
+      hrZones: runHrZones,
+      powerZones: runPowerZones
+    } as any)
+
+    await IntervalsService.syncActivityStream(userId, workoutId, activityId)
+
+    expect(sportSettingsRepository.getForActivityType).toHaveBeenCalledWith(userId, 'Run')
+    expect(workoutStreamRepository.upsert).toHaveBeenCalledTimes(1)
+    const payload = vi.mocked(workoutStreamRepository.upsert).mock.calls[0]?.[1] as any
+    expect(payload.hrZoneTimes).toEqual([1, 2])
+    expect(payload.powerZoneTimes).toEqual([1, 2])
+  })
+
+  it('falls back to user-level then built-in zones when no sport profile exists', async () => {
+    mockStoredWorkoutType('Run')
+    mockStreams([90, 150, 250], [100, 200])
+    vi.mocked(sportSettingsRepository.getForActivityType).mockResolvedValue(null as any)
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      hrZones: [
+        { name: 'Z1', min: 0, max: 100 },
+        { name: 'Z2', min: 101, max: 200 },
+        { name: 'Z3', min: 201, max: 300 }
+      ],
+      powerZones: [
+        { name: 'Z1', min: 0, max: 150 },
+        { name: 'Z2', min: 151, max: 500 }
+      ]
+    } as any)
+
+    await IntervalsService.syncActivityStream(userId, workoutId, activityId)
+
+    const payload = vi.mocked(workoutStreamRepository.upsert).mock.calls[0]?.[1] as any
+    expect(payload.hrZoneTimes).toEqual([1, 1, 1])
+    expect(payload.powerZoneTimes).toEqual([1, 1])
+  })
+
+  it('falls back per-zone-array when the profile zones are missing or empty', async () => {
+    mockStoredWorkoutType('Run')
+    mockStreams([50, 150], [100, 200, 200])
+    vi.mocked(sportSettingsRepository.getForActivityType).mockResolvedValue({
+      hrZones: [],
+      powerZones: runPowerZones
+    } as any)
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      hrZones: [
+        { name: 'Z1', min: 0, max: 100 },
+        { name: 'Z2', min: 101, max: 500 }
+      ],
+      powerZones: []
+    } as any)
+
+    await IntervalsService.syncActivityStream(userId, workoutId, activityId)
+
+    const payload = vi.mocked(workoutStreamRepository.upsert).mock.calls[0]?.[1] as any
+    // Empty profile HR zones fall back to the user-level HR zones.
+    expect(payload.hrZoneTimes).toEqual([1, 1])
+    // Non-empty profile power zones are preserved (profile wins over empty user zones).
+    expect(payload.powerZoneTimes).toEqual([1, 2])
+  })
+
+  it('falls back to built-in zones when profile and user zones are both missing', async () => {
+    mockStoredWorkoutType('Run')
+    mockStreams([130, 150], [100])
+    vi.mocked(sportSettingsRepository.getForActivityType).mockResolvedValue(null as any)
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(null as any)
+
+    await IntervalsService.syncActivityStream(userId, workoutId, activityId)
+
+    const payload = vi.mocked(workoutStreamRepository.upsert).mock.calls[0]?.[1] as any
+    expect(payload.hrZoneTimes).toHaveLength(DEFAULT_HR_ZONES.length)
+    expect(payload.powerZoneTimes).toHaveLength(DEFAULT_POWER_ZONES.length)
+    // 130/150 land in DEFAULT Z2 (121-145 is Z2; 146-160 is Z3).
+    expect(payload.hrZoneTimes).toEqual([0, 1, 1, 0, 0])
+    expect(payload.powerZoneTimes).toEqual([1, 0, 0, 0, 0])
   })
 })
