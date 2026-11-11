@@ -49,7 +49,6 @@ export default defineEventHandler(async (event) => {
 
     return { success: true }
   } catch (error: any) {
-    if (error?.statusCode === 503) throw error
     console.error('[Garmin Webhook] Failed to log request:', error)
     throw createError({
       statusCode: 503,

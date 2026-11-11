@@ -96,39 +96,64 @@ describe('POST /api/webhooks/garmin (CW-836)', () => {
     expect(serialized).not.toContain('abc')
   })
 
-  it('real logger maps a rejected DB insertion to null (handler 503 trigger)', async () => {
-    const realLogWebhookRequest = await getRealLogger()
-    webhookLogCreate.mockRejectedValueOnce(new Error('connection refused'))
-
-    const stored = await realLogWebhookRequest({
-      provider: 'garmin',
-      eventType: 'PUSH',
-      payload: { activities: [] },
-      headers: {},
-      query: {},
-      status: 'PENDING'
+  it('normalizes an existing secret-bearing 503 rejection', async () => {
+    mockLogWebhookRequest.mockRejectedValueOnce(
+      Object.assign(new Error('secret-token'), {
+        statusCode: 503,
+        statusMessage: 'secret-token',
+        data: { token: 'secret-token' }
+      })
+    )
+    const handler = await getHandler()
+    const failure = await handler(buildEvent() as any).catch((error: unknown) => error)
+    expect(failure).toMatchObject({
+      statusCode: 503,
+      statusMessage: 'Garmin delivery not persisted'
     })
+    expect(String(failure)).not.toContain('secret-token')
+    expect(JSON.stringify(failure)).not.toContain('secret-token')
+  })
 
-    expect(stored).toBeNull()
+  it('returns generic 503 through the real logger when database insertion rejects', async () => {
+    mockLogWebhookRequest.mockImplementation(await getRealLogger())
+    webhookLogCreate.mockRejectedValueOnce(new Error('connection refused: secret-token'))
+    const handler = await getHandler()
+    const failure = await handler(buildEvent() as any).catch((error: unknown) => error)
+    expect(failure).toMatchObject({
+      statusCode: 503,
+      statusMessage: 'Garmin delivery not persisted'
+    })
+    expect(JSON.stringify(failure)).not.toContain('secret-token')
     expect(webhookLogCreate).toHaveBeenCalledTimes(1)
     expect(webhookLogCreate.mock.calls[0]![0]).toMatchObject({
       data: expect.objectContaining({ provider: 'garmin', status: 'PENDING' })
     })
   })
 
-  it('real logger persists provider/status through to prisma on success', async () => {
-    const realLogWebhookRequest = await getRealLogger()
-    webhookLogCreate.mockImplementationOnce(async (args: any) => ({ id: 'log-1', ...args.data }))
-
-    const stored: any = await realLogWebhookRequest({
-      provider: 'garmin',
-      eventType: 'PUSH',
-      payload: { activities: [{ activityId: 1 }] },
-      headers: { h: '1' },
-      query: { q: '1' },
-      status: 'PENDING'
+  it('waits for the real logger database insertion before acknowledging success', async () => {
+    mockLogWebhookRequest.mockImplementation(await getRealLogger())
+    let finish!: (row: any) => void
+    let entered!: () => void
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
     })
-
-    expect(stored).toMatchObject({ id: 'log-1', provider: 'garmin', status: 'PENDING' })
+    webhookLogCreate.mockImplementationOnce(() => {
+      entered()
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    const handler = await getHandler()
+    let acknowledged = false
+    const result = handler(buildEvent() as any).then((value: unknown) => {
+      acknowledged = true
+      return value
+    })
+    await started
+    await Promise.resolve()
+    expect(acknowledged).toBe(false)
+    finish({ id: 'log-1', provider: 'garmin', status: 'PENDING' })
+    await expect(result).resolves.toEqual({ success: true })
+    expect(webhookLogCreate).toHaveBeenCalledTimes(1)
   })
 })
