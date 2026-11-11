@@ -22,14 +22,12 @@ export function useReportI18n() {
 
   const tr = (key: string, fallback: string, params?: Record<string, string | number>) => {
     if (typeof t.value !== 'function') return interpolate(fallback, params)
-    // Ask Tolgee whether the key resolves instead of inferring it from the
-    // returned value: with `orEmpty`, a key absent from both the active
-    // locale and the English fallback resolves to '' — while a translation
-    // whose value legitimately equals its key still resolves truthy (CW-450).
-    // `noWrap` keeps the probe a raw string when the in-context observer is
-    // active; the rendered lookup below stays wrapped for in-context editing.
-    const probe = t.value(key, { noWrap: true, orEmpty: true })
-    if (!probe) {
+    // Tolgee applies defaultValue only when resolution (including language
+    // fallback) fails; an intentionally empty translation remains ''. A second
+    // default disambiguates a real value equal to the first probe's default.
+    // Keep probes unwrapped, but retain normal in-context wrapping when rendering.
+    const probe = t.value(key, '', { noWrap: true })
+    if (probe === '' && t.value(key, 'missing', { noWrap: true }) === 'missing') {
       if (isDevWarnEnabled) {
         console.warn(`[useReportI18n] missing translation for key "${key}" — using fallback.`)
       }

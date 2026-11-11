@@ -1,54 +1,68 @@
 // @vitest-environment nuxt
 
 import { computed } from 'vue'
+import { Tolgee } from '@tolgee/web'
+import { FormatIcu } from '@tolgee/format-icu'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useReportI18n } from '../../../../app/composables/useReportI18n'
 
-// Static-data stand-in for the `report` namespace: one key whose value
-// legitimately equals its key, one normal key, and anything else absent.
-// The probe call shape `t(key, { orEmpty: true })` resolves '' for absent
-// keys — mirroring Tolgee's real `orEmpty` semantics — while the plain
-// `t(key)` shape echoes the raw key, as Tolgee does for missing keys.
+// Mock only Vue injection; every lookup uses the installed Tolgee implementation.
+const bridge = vi.hoisted(() => ({ t: undefined as unknown }))
 vi.mock('@tolgee/vue', () => ({
-  useTranslate: () => ({
-    t: computed(() => (key: string, optionsOrDefault?: unknown) => {
-      const store: Record<string, string> = { status: 'status', greeting: 'Hello' }
-      const opts =
-        typeof optionsOrDefault === 'object' && optionsOrDefault !== null
-          ? (optionsOrDefault as Record<string, unknown>)
-          : {}
-      if (opts.orEmpty) return key in store ? store[key] : ''
-      return key in store ? store[key] : key
-    })
-  })
+  useTranslate: () => ({ t: computed(() => bridge.t) })
 }))
 
 describe('useReportI18n tr() (CW-450)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.restoreAllMocks()
+    const tolgee = Tolgee()
+      .use(FormatIcu())
+      .init({
+        language: 'es',
+        fallbackLanguage: 'en',
+        defaultNs: 'report',
+        ns: ['report'],
+        staticData: {
+          'es:report': { status: 'status', greeting: 'Hola', empty: '', marker: 'missing' },
+          'en:report': { empty: 'English empty fallback', english: 'English', englishEmpty: '' }
+        }
+      })
+    await tolgee.run()
+    bridge.t = (key: string, ...args: unknown[]) =>
+      (tolgee.t as (...args: unknown[]) => string)(key, ...args)
   })
 
-  it('renders the translation when its value equals its key, not the fallback', () => {
-    const { tr } = useReportI18n()
-    expect(tr('status', 'Status fallback')).toBe('status')
-  })
-
-  it('renders the translation when its value differs from its key', () => {
-    const { tr } = useReportI18n()
-    expect(tr('greeting', 'Hi fallback')).toBe('Hello')
-  })
-
-  it('uses the fallback for a genuinely missing key and warns in development', () => {
+  it.each([
+    ['status', 'status'],
+    ['greeting', 'Hola'],
+    ['empty', ''],
+    ['english', 'English'],
+    ['englishEmpty', ''],
+    ['marker', 'missing']
+  ])('preserves resolved %s without a missing-key warning', (key, expected) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const { tr } = useReportI18n()
-    expect(tr('does_not_exist', 'Missing fallback')).toBe('Missing fallback')
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('does_not_exist'))
-    warn.mockRestore()
+    expect(useReportI18n().tr(key, 'Caller fallback')).toBe(expected)
+    expect(warn).not.toHaveBeenCalled()
   })
 
-  it('interpolates params into both translations and fallbacks', () => {
-    const { tr } = useReportI18n()
-    expect(tr('greeting', 'Hi {name}', { name: 'Ada' })).toBe('Hello')
-    expect(tr('does_not_exist', 'Hi {name}', { name: 'Ada' })).toBe('Hi Ada')
+  it('uses and interpolates the fallback for an absent key and warns in development', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(useReportI18n().tr('absent', 'Hi {name}', { name: 'Ada' })).toBe('Hi Ada')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('absent'))
+  })
+
+  it('retains the ordinary wrapped lookup for rendering', () => {
+    const realT = bridge.t as (...args: unknown[]) => string
+    const t = vi.fn((...args: unknown[]) => realT(...args))
+    bridge.t = t
+    expect(useReportI18n().tr('greeting', 'Fallback')).toBe('Hola')
+    expect(t).toHaveBeenLastCalledWith('greeting')
+  })
+
+  it('retains parameter interpolation for translations without ICU formatting', async () => {
+    const tolgee = Tolgee().init({ language: 'en', staticData: { en: { hello: 'Hi {name}' } } })
+    await tolgee.run()
+    bridge.t = tolgee.t
+    expect(useReportI18n().tr('hello', 'Fallback', { name: 'Ada' })).toBe('Hi Ada')
   })
 })
