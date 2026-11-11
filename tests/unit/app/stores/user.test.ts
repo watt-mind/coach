@@ -51,4 +51,48 @@ describe('useUserStore Pinia Store', () => {
     expect(store.user).toBeNull()
     expect(store.userLoading).toBe(false)
   })
+
+  it('returns the cached profile without refetching when not forced', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ profile: { id: 'cached' }, dataSyncStatus: null, missingFields: [] })
+    vi.stubGlobal('$fetch', fetchMock)
+
+    const store = useUserStore()
+    await store.fetchProfile()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    fetchMock.mockClear()
+    await store.fetchProfile()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(store.profile).toEqual({ id: 'cached' })
+  })
+
+  it('refetches the profile when force=true even with a populated cache (CW-852)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        profile: { id: 'stale' },
+        dataSyncStatus: { latestWellnessDate: '2026-11-01' },
+        missingFields: ['weight', 'height']
+      })
+      .mockResolvedValueOnce({
+        profile: { id: 'fresh' },
+        dataSyncStatus: { latestWellnessDate: '2026-11-11' },
+        missingFields: ['height']
+      })
+    vi.stubGlobal('$fetch', fetchMock)
+
+    const store = useUserStore()
+    await store.fetchProfile()
+    expect(store.profile).toEqual({ id: 'stale' })
+    expect(store.dataSyncStatus).toEqual({ latestWellnessDate: '2026-11-01' })
+    expect(store.missingFields).toEqual(['weight', 'height'])
+
+    await store.fetchProfile(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(store.profile).toEqual({ id: 'fresh' })
+    expect(store.dataSyncStatus).toEqual({ latestWellnessDate: '2026-11-11' })
+    expect(store.missingFields).toEqual(['height'])
+  })
 })

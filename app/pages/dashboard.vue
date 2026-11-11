@@ -575,7 +575,9 @@
     await integrationStore.fetchStatus()
     await refreshOnboardingStatus()
     await Promise.all([
-      userStore.fetchProfile(),
+      // Sync delivers fresh profile data server-side; bypass the populated
+      // cache so the athlete card reflects post-sync values (CW-852).
+      userStore.fetchProfile(true),
       recommendationStore.fetchTodayRecommendation(),
       activityStore.fetchRecentActivity(),
       fetchUpcomingWorkouts(),
