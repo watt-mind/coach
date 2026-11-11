@@ -1,3 +1,6 @@
+import { generateText, type ModelMessage } from 'ai'
+import { MockLanguageModelV3 } from 'ai/test'
+import { resolveApprovalToolNamesForSelection } from '../../../../server/utils/chat/skills'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nutritionTools } from '../../../../server/utils/ai-tools/nutrition'
 import { nutritionRepository } from '../../../../server/utils/repositories/nutritionRepository'
@@ -375,5 +378,109 @@ describe('extractFluidIntakeMl container vs. explicit volume double-counting (CW
 
   it('sums independent entries instead of suppressing the second one', () => {
     expect(extractFluidIntakeMl('500ml + a glass of water')).toBe(750)
+  })
+})
+
+describe('meal-plan SDK approval boundary (CW-848)', () => {
+  const input = {
+    date: '2026-03-10',
+    window_type: 'PRE_WORKOUT',
+    meal: { id: 'meal-1', name: 'Oats', carbs: 60 }
+  }
+  const messages: ModelMessage[] = [{ role: 'user', content: 'Lock this meal to my plan' }]
+  const usage = {
+    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 1, text: 1, reasoning: 0 }
+  }
+  function model(callTool: boolean) {
+    return new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: callTool
+          ? [
+              {
+                type: 'tool-call' as const,
+                toolCallId: 'lock-1',
+                toolName: 'lock_meal_to_plan',
+                input: JSON.stringify(input)
+              }
+            ]
+          : [{ type: 'text' as const, text: 'Done' }],
+        finishReason: {
+          unified: callTool ? ('tool-calls' as const) : ('stop' as const),
+          raw: undefined
+        },
+        usage,
+        warnings: []
+      })
+    })
+  }
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(nutritionPlanService.lockMeal).mockResolvedValue({ id: 'planned-1' } as any)
+  })
+
+  it.each([true, false])('selects approval tools with approval setting %s', async (required) => {
+    const tools = nutritionTools('user-123', 'America/Chicago', {
+      aiRequireToolApproval: required
+    } as any)
+    const names = await resolveApprovalToolNamesForSelection(tools, {
+      aiRequireToolApproval: required,
+      useTools: true
+    })
+    expect(names.includes('lock_meal_to_plan')).toBe(required)
+    expect(names).not.toContain('get_meal_recommendations')
+    expect(tools.get_meal_recommendations.needsApproval).toBeUndefined()
+  })
+
+  it.each([true, false])(
+    'holds pending writes and resumes approval=%s through the SDK',
+    async (approved) => {
+      const tools = nutritionTools('user-123', 'America/Chicago', {
+        aiRequireToolApproval: true
+      } as any)
+      const pending = await generateText({ model: model(true), tools, messages })
+      const request = pending.content.find((part) => part.type === 'tool-approval-request')
+      expect(request).toBeDefined()
+      expect(nutritionPlanService.lockMeal).not.toHaveBeenCalled()
+      if (!request || request.type !== 'tool-approval-request')
+        throw new Error('Missing approval request')
+      const resumed = await generateText({
+        model: model(false),
+        tools,
+        messages: [
+          ...messages,
+          ...pending.response.messages,
+          {
+            role: 'tool',
+            content: [{ type: 'tool-approval-response', approvalId: request.approvalId, approved }]
+          }
+        ]
+      })
+      expect(nutritionPlanService.lockMeal).toHaveBeenCalledTimes(approved ? 1 : 0)
+      if (approved) {
+        expect(nutritionPlanService.lockMeal).toHaveBeenCalledWith(
+          'user-123',
+          new Date('2026-03-10T12:00:00.000Z'),
+          input.window_type,
+          input.meal
+        )
+      }
+      expect(resumed.text).toBe('Done')
+    }
+  )
+
+  it('executes without a prompt when approval is disabled', async () => {
+    const tools = nutritionTools('user-123', 'America/Chicago', {
+      aiRequireToolApproval: false
+    } as any)
+    const result = await generateText({ model: model(true), tools, messages })
+    expect(result.content.some((part) => part.type === 'tool-approval-request')).toBe(false)
+    expect(nutritionPlanService.lockMeal).toHaveBeenCalledTimes(1)
+    expect(nutritionPlanService.lockMeal).toHaveBeenCalledWith(
+      'user-123',
+      new Date('2026-03-10T12:00:00.000Z'),
+      input.window_type,
+      input.meal
+    )
   })
 })
