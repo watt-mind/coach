@@ -4,12 +4,14 @@ const {
   prismaWellnessFindUnique,
   prismaWellnessUpdate,
   prismaUserFindUnique,
+  historyMock,
   checkQuotaMock,
   generateStructuredAnalysisMock
 } = vi.hoisted(() => ({
   prismaWellnessFindUnique: vi.fn(),
   prismaWellnessUpdate: vi.fn(),
   prismaUserFindUnique: vi.fn(),
+  historyMock: vi.fn().mockResolvedValue([]),
   checkQuotaMock: vi.fn(),
   generateStructuredAnalysisMock: vi.fn()
 }))
@@ -61,7 +63,7 @@ vi.mock('../../../../../server/utils/date', async () => {
 
 vi.mock('../../../../../server/utils/repositories/wellnessRepository', () => ({
   wellnessRepository: {
-    getForUser: vi.fn().mockResolvedValue([])
+    getForUser: historyMock
   }
 }))
 
@@ -297,5 +299,145 @@ describe('analyzeWellness skin temperature formatting', () => {
 
     const prompt = (generateStructuredAnalysis as any).mock.calls[0][0] as string
     expect(prompt).toContain('Skin Temp: 33.5°C')
+  })
+})
+
+describe('analyzeWellness sleep duration', () => {
+  const record = {
+    id: 'wellness-1',
+    date: new Date('2026-03-10T00:00:00.000Z'),
+    hrv: null,
+    restingHr: null,
+    recoveryScore: null,
+    readiness: null,
+    sleepHours: null,
+    sleepSecs: null,
+    rawJson: null
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    historyMock.mockResolvedValue([])
+    prismaWellnessFindUnique.mockResolvedValue({ ...record })
+    prismaWellnessUpdate.mockResolvedValue({})
+    prismaUserFindUnique.mockResolvedValue({ language: 'English' })
+    checkQuotaMock.mockResolvedValue(undefined)
+    generateStructuredAnalysisMock.mockResolvedValue({
+      executive_summary: 'Ready',
+      status: 'READY',
+      sections: [],
+      recommendations: []
+    })
+  })
+
+  it.each([
+    { sleepHours: null, sleepSecs: 28800, expected: 8 },
+    { sleepHours: 7.5, sleepSecs: null, expected: 7.5 },
+    { sleepHours: 6, sleepSecs: 28800, expected: 6 },
+    { sleepHours: 0, sleepSecs: 28800, expected: 0 },
+    { sleepHours: null, sleepSecs: 0, expected: 0 }
+  ])(
+    'analyzes hours=$sleepHours seconds=$sleepSecs as $expected hours',
+    async ({ sleepHours, sleepSecs, expected }) => {
+      prismaWellnessFindUnique.mockResolvedValue({ ...record, sleepHours, sleepSecs })
+      const { analyzeWellness } =
+        await import('../../../../../server/utils/services/wellness-analysis')
+      const result = await analyzeWellness('wellness-1', 'user-1')
+
+      expect(result.success).toBe(true)
+      expect(checkQuotaMock).toHaveBeenCalledWith('user-1', 'wellness_analysis')
+      expect(generateStructuredAnalysisMock).toHaveBeenCalledTimes(1)
+      expect(generateStructuredAnalysisMock.mock.calls[0][0]).toContain(
+        `- Sleep: ${expected} hours`
+      )
+      expect(prismaWellnessUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ aiAnalysisStatus: 'COMPLETED' })
+        })
+      )
+    }
+  )
+
+  it('projects seconds and uses hours-first durations in history and averages, including zero', async () => {
+    prismaWellnessFindUnique.mockResolvedValue({ ...record, sleepSecs: 28800 })
+    historyMock.mockResolvedValue([
+      { ...record, date: new Date('2026-03-06'), sleepSecs: 28800 },
+      { ...record, date: new Date('2026-03-07'), sleepHours: 6, sleepSecs: 36000 },
+      { ...record, date: new Date('2026-03-08'), sleepHours: 0, sleepSecs: 36000 },
+      { ...record, date: new Date('2026-03-09'), sleepHours: 7 },
+      { ...record }
+    ])
+    const { analyzeWellness } =
+      await import('../../../../../server/utils/services/wellness-analysis')
+    await analyzeWellness('wellness-1', 'user-1')
+
+    expect(historyMock).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({
+        select: expect.objectContaining({ sleepHours: true, sleepSecs: true })
+      })
+    )
+    const prompt = generateStructuredAnalysisMock.mock.calls[0][0]
+    expect(prompt).toContain('- 2026-03-06: Sleep:8.0h')
+    expect(prompt).toContain('- 2026-03-07: Sleep:6.0h')
+    expect(prompt).toContain('- 2026-03-08: Sleep:0.0h')
+    expect(prompt).toContain('- 2026-03-09: Sleep:7.0h')
+    expect(prompt).not.toContain('- 2026-03-10: Sleep:')
+    expect(prompt).toContain('Average Sleep: 5.3 hours')
+  })
+
+  it('keeps truly empty records skipped before quota or analysis', async () => {
+    const { analyzeWellness } =
+      await import('../../../../../server/utils/services/wellness-analysis')
+    expect(await analyzeWellness('wellness-1', 'user-1')).toEqual({
+      success: true,
+      skipped: true,
+      reason: 'EMPTY_RECORD'
+    })
+    expect(prismaWellnessUpdate).toHaveBeenCalledWith({
+      where: { id: 'wellness-1' },
+      data: { aiAnalysisStatus: 'SKIPPED_EMPTY' }
+    })
+    expect(checkQuotaMock).not.toHaveBeenCalled()
+    expect(generateStructuredAnalysisMock).not.toHaveBeenCalled()
+  })
+
+  it('still skips future seconds-only records before quota or analysis', async () => {
+    prismaWellnessFindUnique.mockResolvedValue({
+      ...record,
+      date: new Date('2026-03-11'),
+      sleepSecs: 28800
+    })
+    const { analyzeWellness } =
+      await import('../../../../../server/utils/services/wellness-analysis')
+    expect(await analyzeWellness('wellness-1', 'user-1')).toEqual({
+      success: true,
+      skipped: true,
+      reason: 'FUTURE_DATE'
+    })
+    expect(prismaWellnessUpdate).toHaveBeenCalledWith({
+      where: { id: 'wellness-1' },
+      data: { aiAnalysisStatus: 'NOT_STARTED' }
+    })
+    expect(checkQuotaMock).not.toHaveBeenCalled()
+    expect(generateStructuredAnalysisMock).not.toHaveBeenCalled()
+  })
+
+  it('still enforces quota for seconds-only records', async () => {
+    prismaWellnessFindUnique.mockResolvedValue({ ...record, sleepSecs: 28800 })
+    checkQuotaMock.mockRejectedValue(
+      Object.assign(new Error('Quota exceeded'), { statusCode: 429 })
+    )
+    const { analyzeWellness } =
+      await import('../../../../../server/utils/services/wellness-analysis')
+    expect(await analyzeWellness('wellness-1', 'user-1')).toEqual({
+      success: false,
+      reason: 'QUOTA_EXCEEDED'
+    })
+    expect(prismaWellnessUpdate).toHaveBeenCalledWith({
+      where: { id: 'wellness-1' },
+      data: { aiAnalysisStatus: 'QUOTA_EXCEEDED' }
+    })
+    expect(generateStructuredAnalysisMock).not.toHaveBeenCalled()
   })
 })
