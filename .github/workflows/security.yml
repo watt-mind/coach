@@ -34,7 +34,11 @@ jobs:
     # nothing CodeQL's JS/TS source analysis looks at — so skip them instead of
     # burning a runner slot per bump. The post-merge push scan still covers them.
     if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]'
-    runs-on: [self-hosted, linux-container]
+    # GitHub-hosted on purpose (CW-919): the scan was ~29% of this repo's
+    # runner-seconds on the saturated self-hosted linux-container pool, and a
+    # hosted VM is the right isolation for PR-controlled code. Standard hosted
+    # runners are free for public repositories.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -50,11 +54,9 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
-          # The shared host has 62 GB RAM / 32 CPUs, but each runner is capped
-          # at 14 GB. Keep CodeQL below the runner cgroup instead of allowing
-          # host-level auto-detection to request ~60 GB and 32 threads.
-          ram: 8192
-          threads: 4
+          # No ram/threads caps: on a hosted VM, CodeQL's auto-detection sees
+          # the machine it actually has. Re-add them (CW-736) if this job ever
+          # returns to a cgroup-limited self-hosted runner.
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
