@@ -366,6 +366,12 @@ export async function queueSyncOperation(data: {
  * Process a single sync queue item
  */
 export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
+  const claimWhere = {
+    id: queueItem.id,
+    status: queueItem.status ?? 'PENDING',
+    lastAttempt: queueItem.lastAttempt ?? null,
+    attempts: queueItem.attempts
+  }
   try {
     const queuedStructureRevision =
       typeof queueItem.structureRevision === 'number' ? queueItem.structureRevision : null
@@ -380,11 +386,11 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
         select: { structureRevision: true }
       })
       if (!current || current.structureRevision !== queuedStructureRevision) {
-        await prisma.syncQueue.update({
-          where: { id: queueItem.id },
+        const superseded = await prisma.syncQueue.updateMany({
+          where: claimWhere,
           data: { status: 'SUPERSEDED', completedAt: new Date(), error: null }
         })
-        return true
+        return superseded.count > 0
       }
     }
     // Get integration
@@ -397,8 +403,8 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
 
     if (!integration) {
       // Mark as failed permanently if no integration
-      await prisma.syncQueue.update({
-        where: { id: queueItem.id },
+      await prisma.syncQueue.updateMany({
+        where: claimWhere,
         data: {
           status: 'FAILED',
           error: 'No Intervals.icu integration found',
@@ -480,8 +486,8 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
     }
 
     // Mark as completed
-    await prisma.syncQueue.update({
-      where: { id: queueItem.id },
+    const completed = await prisma.syncQueue.updateMany({
+      where: claimWhere,
       data: {
         status: 'COMPLETED',
         error: null,
@@ -490,6 +496,8 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
         lastAttempt: new Date()
       }
     })
+
+    if (completed.count === 0) return false
 
     // Update entity sync status
     if (queueItem.entityType === 'planned_workout' && queueItem.operation !== 'DELETE') {
@@ -535,8 +543,8 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
     const newAttempts = queueItem.attempts + 1
     const maxAttempts = 3
 
-    await prisma.syncQueue.update({
-      where: { id: queueItem.id },
+    const failed = await prisma.syncQueue.updateMany({
+      where: claimWhere,
       data: {
         status: newAttempts >= maxAttempts ? 'FAILED' : 'PENDING',
         error: error.message,
@@ -544,6 +552,8 @@ export async function processSyncQueueItem(queueItem: any): Promise<boolean> {
         lastAttempt: new Date()
       }
     })
+
+    if (failed.count === 0) return false
 
     // Update entity with error if permanently failed
     if (newAttempts >= maxAttempts) {

@@ -19,7 +19,7 @@ vi.mock('../../../../server/utils/db', () => ({
     },
     syncQueue: {
       create: vi.fn(),
-      update: vi.fn()
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     event: {
       update: vi.fn()
@@ -120,9 +120,9 @@ describe('intervals-sync helpers', () => {
         title: 'Tempo Ride'
       })
     )
-    expect(prisma.syncQueue.update).toHaveBeenCalledWith(
+    expect(prisma.syncQueue.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'queue-1' },
+        where: { status: 'PENDING', lastAttempt: null, attempts: 0, id: 'queue-1' },
         data: expect.objectContaining({
           status: 'COMPLETED'
         })
@@ -157,8 +157,8 @@ describe('intervals-sync helpers', () => {
 
     expect(result).toBe(true)
     expect(updateIntervalsPlannedWorkout).not.toHaveBeenCalled()
-    expect(prisma.syncQueue.update).toHaveBeenCalledWith({
-      where: { id: 'queue-stale' },
+    expect(prisma.syncQueue.updateMany).toHaveBeenCalledWith({
+      where: { status: 'PENDING', lastAttempt: null, attempts: 0, id: 'queue-stale' },
       data: expect.objectContaining({ status: 'SUPERSEDED' })
     })
     expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
@@ -183,8 +183,8 @@ describe('intervals-sync helpers', () => {
     expect(deleteIntervalsPlannedWorkout).toHaveBeenCalledWith(expect.anything(), '12345')
     expect(prisma.plannedWorkout.findUnique).not.toHaveBeenCalled()
     expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
-    expect(prisma.syncQueue.update).toHaveBeenCalledWith({
-      where: { id: 'queue-delete' },
+    expect(prisma.syncQueue.updateMany).toHaveBeenCalledWith({
+      where: { status: 'PENDING', lastAttempt: null, attempts: 0, id: 'queue-delete' },
       data: expect.objectContaining({ status: 'COMPLETED', attempts: 1 })
     })
   })
@@ -207,8 +207,8 @@ describe('intervals-sync helpers', () => {
     })
 
     expect(result).toBe(true)
-    expect(prisma.syncQueue.update).toHaveBeenCalledWith({
-      where: { id: 'queue-deleted-remote' },
+    expect(prisma.syncQueue.updateMany).toHaveBeenCalledWith({
+      where: { status: 'PENDING', lastAttempt: null, attempts: 1, id: 'queue-deleted-remote' },
       data: expect.objectContaining({ status: 'COMPLETED', attempts: 2 })
     })
     expect(prisma.plannedWorkout.findUnique).not.toHaveBeenCalled()
@@ -233,8 +233,13 @@ describe('intervals-sync helpers', () => {
       })
 
       expect(result).toBe(false)
-      expect(prisma.syncQueue.update).toHaveBeenCalledWith({
-        where: { id: 'queue-retry-delete' },
+      expect(prisma.syncQueue.updateMany).toHaveBeenCalledWith({
+        where: {
+          status: 'PENDING',
+          lastAttempt: null,
+          attempts,
+          id: 'queue-retry-delete'
+        },
         data: expect.objectContaining({
           status: attempts === 0 ? 'PENDING' : 'FAILED',
           attempts: attempts + 1,
@@ -242,6 +247,39 @@ describe('intervals-sync helpers', () => {
         })
       })
       expect(prisma.plannedWorkout.findUnique).not.toHaveBeenCalled()
+      expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
+    }
+  )
+  it.each(['success', 'failure', 'superseded', 'missing integration'])(
+    'guards stale helper queue writes on %s',
+    async (outcome) => {
+      const { processSyncQueueItem } = await import('../../../../server/utils/intervals-sync')
+      const lastAttempt = new Date('2026-11-11T00:00:00Z')
+      vi.mocked(prisma.syncQueue.updateMany).mockResolvedValueOnce({ count: 0 })
+      vi.mocked(prisma.plannedWorkout.findUnique).mockResolvedValue({ structureRevision: 4 } as any)
+      if (outcome === 'missing integration')
+        vi.mocked(prisma.integration.findFirst).mockResolvedValue(null)
+      vi.mocked(deleteIntervalsPlannedWorkout).mockImplementation(async () => {
+        if (outcome === 'failure') throw new Error('provider failure')
+      })
+      await processSyncQueueItem({
+        id: 'stale-owner',
+        userId: 'u',
+        entityId: 'p',
+        entityType: 'planned_workout',
+        operation: outcome === 'superseded' ? 'UPDATE' : 'DELETE',
+        structureRevision: 3,
+        payload: { externalId: '123' },
+        attempts: 2,
+        status: 'PROCESSING',
+        lastAttempt
+      })
+      expect(prisma.syncQueue.updateMany).toHaveBeenCalledTimes(1)
+      expect(prisma.syncQueue.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'stale-owner', status: 'PROCESSING', lastAttempt, attempts: 2 }
+        })
+      )
       expect(prisma.plannedWorkout.updateMany).not.toHaveBeenCalled()
     }
   )
