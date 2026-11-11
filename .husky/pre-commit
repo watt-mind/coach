@@ -1,1 +1,111 @@
-npx lint-staged
+#!/bin/sh
+# Pre-commit hook (CW-758): run lint-staged without its repository-global
+# backup stash.
+#
+# lint-staged's default backup (`git stash push --keep-index` /
+# `git stash store`) writes to the repository-global stash, which is shared
+# across every worktree of this repo. Concurrent commits from different
+# worktrees can therefore see, conflict with, or drop each other's
+# "lint-staged automatic backup" entries.
+#
+# `--no-stash` avoids every `git stash` operation, but lint-staged then also
+# skips restoring the hidden partially-staged changes when a task fails, so
+# this hook snapshots the staged and unstaged diffs into a temp dir (outside
+# the repo) and restores them if lint-staged fails. No `git stash` command is
+# used anywhere in this workflow.
+
+# Husky executes this file with `sh -e`; every command that may legitimately
+# fail is guarded so a lint-staged failure still runs the restore path below
+# instead of aborting the script early.
+
+SNAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-snapshot.XXXXXX")" || exit 1
+STAGED_PATCH="$SNAP_DIR/staged.patch"
+UNSTAGED_PATCH="$SNAP_DIR/unstaged.patch"
+MERGE_DIR="$SNAP_DIR/merge"
+GIT_DIR="$(git rev-parse --git-path .)" || {
+  rm -rf "$SNAP_DIR"
+  exit 1
+}
+
+# Snapshot the staged (HEAD -> index) and unstaged (index -> worktree) diffs.
+# `git diff` exits 1 when differences are found, which is expected; only
+# exits > 1 are errors.
+git diff --cached --binary --full-index --no-color --no-ext-diff \
+  --src-prefix=a/ --dst-prefix=b/ >"$STAGED_PATCH"
+if [ "$?" -gt 1 ]; then
+  rm -rf "$SNAP_DIR"
+  exit 1
+fi
+git diff --binary --full-index --no-color --no-ext-diff \
+  --src-prefix=a/ --dst-prefix=b/ >"$UNSTAGED_PATCH"
+if [ "$?" -gt 1 ]; then
+  rm -rf "$SNAP_DIR"
+  exit 1
+fi
+
+# Snapshot in-progress merge state, if any (lint-staged only backs this up
+# when its own stash backup is enabled).
+mkdir -p "$MERGE_DIR"
+for meta in MERGE_HEAD MERGE_MODE MERGE_MSG; do
+  if [ -f "$GIT_DIR/$meta" ]; then
+    cp "$GIT_DIR/$meta" "$MERGE_DIR/$meta" || {
+      rm -rf "$SNAP_DIR"
+      exit 1
+    }
+  fi
+done
+
+if npx lint-staged --no-stash; then
+  LINT_STATUS=0
+else
+  LINT_STATUS=$?
+fi
+
+if [ "$LINT_STATUS" -eq 0 ]; then
+  rm -rf "$SNAP_DIR"
+  rm -f "$GIT_DIR/lint-staged_unstaged.patch"
+  exit 0
+fi
+
+# lint-staged failed: restore the exact pre-hook index and working tree.
+# With `--no-stash` lint-staged implies `--no-revert`, so task fixes may be
+# applied and staged, and hidden partially-staged changes may not have been
+# restored. Rebuild from the snapshot instead.
+RESTORE_FAILED=0
+
+if git rev-parse --verify --quiet HEAD >/dev/null; then
+  if ! git read-tree --reset -i HEAD; then
+    RESTORE_FAILED=1
+  fi
+else
+  if ! git read-tree --empty; then
+    RESTORE_FAILED=1
+  fi
+fi
+if [ -s "$STAGED_PATCH" ] && ! git apply --cached "$STAGED_PATCH"; then
+  RESTORE_FAILED=1
+fi
+# Worktree currently holds task modifications; reset it to the restored
+# index so the unstaged patch applies onto exactly the state it was made from.
+if ! git checkout --force -- .; then
+  RESTORE_FAILED=1
+fi
+if [ -s "$UNSTAGED_PATCH" ] && ! git apply "$UNSTAGED_PATCH"; then
+  RESTORE_FAILED=1
+fi
+for meta in MERGE_HEAD MERGE_MODE MERGE_MSG; do
+  if [ -f "$MERGE_DIR/$meta" ]; then
+    if ! cp "$MERGE_DIR/$meta" "$GIT_DIR/$meta"; then
+      RESTORE_FAILED=1
+    fi
+  fi
+done
+
+if [ "$RESTORE_FAILED" -eq 0 ]; then
+  rm -rf "$SNAP_DIR"
+  rm -f "$GIT_DIR/lint-staged_unstaged.patch"
+else
+  echo "pre-commit: failed to fully restore pre-hook state; snapshot kept at $SNAP_DIR" >&2
+fi
+
+exit "$LINT_STATUS"
