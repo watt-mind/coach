@@ -1094,6 +1094,9 @@ export const IntervalsService = {
       `[Intervals Sync] Retrieved ${plannedWorkouts.length} planned items for ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`
     )
 
+    // Reconciliation must retain remote IDs even when their imports are skipped.
+    const validExternalIds = new Set(plannedWorkouts.map((p) => String(p.id)))
+
     if (options.skipExisting && plannedWorkouts.length > 0) {
       const externalIds = plannedWorkouts.map((planned) => String(planned.id))
       const [existingPlanned, existingNotes, existingEvents] = await Promise.all([
@@ -1138,7 +1141,6 @@ export const IntervalsService = {
     // SMART SYNC RECONCILIATION
     // Remove local items that no longer exist in Intervals (orphans)
     // This handles deletions/moves that missed webhooks
-    const validExternalIds = new Set(plannedWorkouts.map((p) => String(p.id)))
 
     // 1. Find potential orphans in PlannedWorkout
     // Only check items that are marked as SYNCED (or default)
