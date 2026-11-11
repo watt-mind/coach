@@ -53,7 +53,7 @@ vi.mock('../../../../../server/utils/lifetime-subscription', () => ({
 const getHandler = async () =>
   (await import('../../../../../server/api/stripe/portal-session.post')).default
 
-describe('POST /api/stripe/portal-session redirect allowlist', () => {
+describe('POST /api/stripe/portal-session', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getServerSession).mockResolvedValue({ user: { id: 'user-1' } } as any)
@@ -69,6 +69,35 @@ describe('POST /api/stripe/portal-session redirect allowlist', () => {
     vi.mocked(stripe.billingPortal.sessions.create).mockResolvedValue({
       url: 'https://billing.stripe.com/session/test'
     } as any)
+  })
+
+  it('rejects coaching act-as before reading the body or accessing billing state', async () => {
+    vi.mocked(getServerSession).mockResolvedValue({
+      user: { id: 'athlete-1', isCoaching: true, isAdmin: false, originalUserId: 'coach-1' }
+    } as any)
+    const readBody = vi.fn()
+    vi.stubGlobal('readBody', readBody)
+
+    try {
+      const handler = await getHandler()
+      await expect(handler({ body: {} } as any)).rejects.toMatchObject({ statusCode: 403 })
+      expect(readBody).not.toHaveBeenCalled()
+      expect(prisma.user.findUnique).not.toHaveBeenCalled()
+      expect(prisma.user.update).not.toHaveBeenCalled()
+      expect(ensureStripeCustomerForUser).not.toHaveBeenCalled()
+      expect(stripe.billingPortal.sessions.create).not.toHaveBeenCalled()
+    } finally {
+      vi.stubGlobal('readBody', async (event: any) => event.body)
+    }
+  })
+
+  it('rejects requests without an authenticated session', async () => {
+    vi.mocked(getServerSession).mockResolvedValue(null)
+    const handler = await getHandler()
+    await expect(handler({ body: {} } as any)).rejects.toMatchObject({ statusCode: 401 })
+    expect(prisma.user.findUnique).not.toHaveBeenCalled()
+    expect(ensureStripeCustomerForUser).not.toHaveBeenCalled()
+    expect(stripe.billingPortal.sessions.create).not.toHaveBeenCalled()
   })
 
   it('rejects cross-origin returnUrl with 400 and never calls Stripe', async () => {

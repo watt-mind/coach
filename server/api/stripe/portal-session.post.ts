@@ -18,6 +18,12 @@ export default defineEventHandler(async (event) => {
       message: 'Unauthorized'
     })
   }
+  if (session.user.isCoaching) {
+    throw createError({
+      statusCode: 403,
+      message: 'Billing portal access is not available while acting as an athlete'
+    })
+  }
   const userId = session.user.id
 
   // Validate request body
