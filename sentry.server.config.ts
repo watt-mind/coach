@@ -1,5 +1,44 @@
 import * as Sentry from '@sentry/nuxt'
 
+// CW-601: OAuth callback URLs carry single-use credentials
+// (`/api/integrations/<provider>/callback?code=...&state=...`). Any throw
+// inside a callback handler ships `event.request.url` to Sentry, so scrub
+// sensitive query params by name across ALL routes — never per-provider — so
+// newly added integrations are covered by default. The same helper also runs
+// over breadcrumbs, query_string blobs, and transaction/span payloads, which
+// can embed the URL through other Sentry channels.
+// Duplicated (not imported) in sentry.client/server.config.ts on purpose:
+// both files are isolated Sentry entry points.
+function scrubSentryData<T>(value: T): T {
+  if (typeof value === 'string') {
+    return value.replace(
+      /(^|[?&;])([^=?&#;\s]+)=([^&#;\s]*)/g,
+      (match, separator: string, name: string) => {
+        let decodedName: string
+        try {
+          decodedName = decodeURIComponent(name.replace(/\+/g, ' '))
+        } catch {
+          return match
+        }
+        return /^(code|state|access_token|refresh_token|id_token|client_secret)$/i.test(decodedName)
+          ? `${separator}${name}=[Filtered]`
+          : match
+      }
+    ) as T
+  }
+  if (Array.isArray(value)) return value.map(scrubSentryData) as T
+  if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      if (/^(code|state|access_token|refresh_token|id_token|client_secret)$/i.test(key)) {
+        ;(value as Record<string, unknown>)[key] = '[Filtered]'
+      } else {
+        ;(value as Record<string, unknown>)[key] = scrubSentryData(item)
+      }
+    }
+  }
+  return value
+}
+
 const config = useRuntimeConfig()
 
 if (!config.public.sentryEnabled || !config.public.sentryDsn) {
@@ -11,9 +50,24 @@ if (!config.public.sentryEnabled || !config.public.sentryDsn) {
     tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
     integrations: [Sentry.consoleLoggingIntegration({ levels: ['log', 'warn', 'error'] })],
     enableLogs: true,
-    sendDefaultPii: true,
+    // CW-601: `sendDefaultPii` was true, which attaches request headers,
+    // cookies, and IPs to every event. Nothing in triage needs that PII
+    // (no Sentry.setUser / PII-based grouping in this repo), and it widens
+    // the blast radius of any unspent credential that slips through. The
+    // stronger fix is to stop collecting it; the scrubber above stays as
+    // defense-in-depth for URLs that still reach Sentry.
+    sendDefaultPii: false,
     debug: false,
     environment: process.env.NODE_ENV || 'development',
+    beforeBreadcrumb(breadcrumb) {
+      return scrubSentryData(breadcrumb)
+    },
+    beforeSendTransaction(event) {
+      return scrubSentryData(event)
+    },
+    beforeSendSpan(span) {
+      return scrubSentryData(span)
+    },
     beforeSend(event, hint) {
       const error = hint.originalException
 
@@ -83,7 +137,7 @@ if (!config.public.sentryEnabled || !config.public.sentryDsn) {
         }
       }
 
-      return event
+      return scrubSentryData(event)
     }
   })
 }
