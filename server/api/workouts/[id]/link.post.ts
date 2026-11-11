@@ -104,55 +104,69 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const previousPlannedWorkoutId = (workout as { plannedWorkoutId?: string | null })
-    .plannedWorkoutId
-
-  // Repeated link is idempotent — already linked to the requested plan.
-  if (previousPlannedWorkoutId === plannedWorkoutId) {
-    return { success: true }
-  }
-
   try {
-    await prisma.$transaction(async (tx) => {
-      // Link the workout to the planned workout
-      await tx.workout.update({
-        where: { id: workoutId },
-        data: {
-          plannedWorkoutId: plannedWorkoutId
+    await prisma.$transaction(
+      async (tx) => {
+        // Serializable isolation prevents concurrent relinks from committing a
+        // reconciliation based on an obsolete link or remaining-link count.
+        const [currentWorkout, currentPlan] = await Promise.all([
+          tx.workout.findFirst({ where: { id: workoutId, userId } }),
+          tx.plannedWorkout.findFirst({ where: { id: plannedWorkoutId, userId } })
+        ])
+        if (!currentWorkout || !currentPlan) {
+          throw createError({ statusCode: 404, message: 'Workout or planned workout not found' })
         }
-      })
-
-      // Update planned workout status
-      await tx.plannedWorkout.update({
-        where: { id: plannedWorkoutId },
-        data: {
-          completed: true,
-          completionStatus: 'COMPLETED'
+        if (
+          formatUserDate(currentWorkout.date, timezone, 'yyyy-MM-dd') !==
+          formatDateUTC(currentPlan.date, 'yyyy-MM-dd')
+        ) {
+          throw createError({
+            statusCode: 400,
+            message: 'Workout and planned workout must be on the same day to link.'
+          })
         }
-      })
-
-      // Reconcile the previous plan when relinking: only reset it when no
-      // other workout remains linked to it. Stays inside the same transaction
-      // so a failed relink rolls back atomically.
-      if (previousPlannedWorkoutId && previousPlannedWorkoutId !== plannedWorkoutId) {
-        const otherLinkedWorkouts = await tx.workout.count({
-          where: {
-            plannedWorkoutId: previousPlannedWorkoutId,
-            id: { not: workoutId }
+        const previousPlannedWorkoutId = currentWorkout.plannedWorkoutId
+        // Link the workout to the planned workout
+        await tx.workout.update({
+          where: { id: workoutId },
+          data: {
+            plannedWorkoutId: plannedWorkoutId
           }
         })
 
-        if (otherLinkedWorkouts === 0) {
-          await tx.plannedWorkout.update({
-            where: { id: previousPlannedWorkoutId },
-            data: {
-              completed: false,
-              completionStatus: 'PENDING'
+        // Update planned workout status
+        await tx.plannedWorkout.update({
+          where: { id: plannedWorkoutId },
+          data: {
+            completed: true,
+            completionStatus: 'COMPLETED'
+          }
+        })
+
+        // Reconcile the previous plan when relinking: only reset it when no
+        // other workout remains linked to it. Stays inside the same transaction
+        // so a failed relink rolls back atomically.
+        if (previousPlannedWorkoutId && previousPlannedWorkoutId !== plannedWorkoutId) {
+          const otherLinkedWorkouts = await tx.workout.count({
+            where: {
+              plannedWorkoutId: previousPlannedWorkoutId,
+              id: { not: workoutId }
             }
           })
+
+          if (otherLinkedWorkouts === 0) {
+            await tx.plannedWorkout.update({
+              where: { id: previousPlannedWorkoutId },
+              data: {
+                completed: false,
+                completionStatus: 'PENDING'
+              }
+            })
+          }
         }
-      }
-    })
+      },
+      { isolationLevel: 'Serializable' }
+    )
 
     // REACTIVE: Trigger fueling plan update for the workout date
     try {
@@ -167,6 +181,7 @@ export default defineEventHandler(async (event) => {
 
     return { success: true }
   } catch (error) {
+    if ((error as { statusCode?: number }).statusCode) throw error
     console.error('Error linking workouts:', error)
     throw createError({
       statusCode: 500,
