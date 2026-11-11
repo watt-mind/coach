@@ -466,6 +466,29 @@ describe('deduplicationService.mergeDuplicateGroup concurrent deletion', () => {
     expect(tx.workoutExercise.updateMany).not.toHaveBeenCalled()
   })
 
+  it('moves a V1-only donor independently of V2', async () => {
+    const { tx } = installTransactionDouble({
+      liveWorkoutIds: ['best-1', 'duplicate-1'],
+      duplicateHasStreams: true
+    })
+    await deduplicationService.mergeDuplicateGroup(buildGroup('best-1', 'duplicate-1'))
+    expect(tx.workoutStream.update).toHaveBeenCalledWith({
+      where: { workoutId: 'duplicate-1' },
+      data: { workoutId: 'best-1' }
+    })
+    expect(tx.workoutStreamV2.update).not.toHaveBeenCalled()
+  })
+
+  it('preserves an existing V1 destination even when a donor exists', async () => {
+    const { tx } = installTransactionDouble({
+      liveWorkoutIds: ['best-1', 'duplicate-1'],
+      duplicateHasStreams: true
+    })
+    tx.workoutStream.findUnique.mockResolvedValueOnce({ id: 'existing' } as never)
+    await deduplicationService.mergeDuplicateGroup(buildGroup('best-1', 'duplicate-1'))
+    expect(tx.workoutStream.update).not.toHaveBeenCalled()
+  })
+
   it('moves a V2-only donor through the transaction', async () => {
     const { tx } = installTransactionDouble({ liveWorkoutIds: ['best-1', 'duplicate-1'] })
     tx.workoutStreamV2.findFirst.mockResolvedValueOnce({ id: 'v2' } as never)

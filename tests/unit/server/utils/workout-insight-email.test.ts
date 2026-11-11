@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   buildWorkoutReceivedActivityFingerprint,
   buildInterestingCopy,
@@ -152,5 +152,84 @@ describe('workout received eligibility rules', () => {
     })
 
     expect(result).toEqual({ eligible: true })
+  })
+})
+
+vi.mock('../../../../server/utils/db', () => ({
+  prisma: {
+    workout: {
+      findUnique: vi.fn(),
+      count: vi.fn().mockResolvedValue(1),
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    user: { findUnique: vi.fn().mockResolvedValue({ id: 'user', timezone: 'UTC' }) },
+    emailPreference: { findUnique: vi.fn() },
+    emailDelivery: { findMany: vi.fn().mockResolvedValue([]) },
+    workoutStreamV2: { findMany: vi.fn() },
+    workoutStream: { findMany: vi.fn() }
+  }
+}))
+vi.mock('../../../../server/utils/repositories/sportSettingsRepository', () => ({
+  sportSettingsRepository: { getForActivityType: vi.fn() }
+}))
+vi.mock('../../../../server/utils/workout-email-stream-insights', () => ({
+  buildWorkoutStreamInsights: vi.fn(() => {
+    throw new Error('chart projection reached')
+  })
+}))
+
+describe('email chart stream projection', () => {
+  it.each(['v2', 'v1', 'absent'])('passes %s streams to chart builder', async (storage) => {
+    const { prisma } = await import('../../../../server/utils/db')
+    const { queueWorkoutInsightEmail } =
+      await import('../../../../server/utils/workout-insight-email')
+    const { buildWorkoutStreamInsights } =
+      await import('../../../../server/utils/workout-email-stream-insights')
+    vi.mocked(prisma.workout.findUnique).mockResolvedValue({
+      id: 'ride',
+      userId: 'user',
+      type: 'Ride',
+      date: new Date(),
+      durationSec: 3600
+    } as any)
+    const series = {
+      time: [0, 1],
+      watts: [200, 210],
+      heartrate: [140, 141],
+      cadence: [80, 81],
+      distance: [0, 10],
+      grade: [1, 2],
+      moving: [true, true],
+      surges: []
+    }
+    const rows = [{ id: 'stream', workoutId: 'ride', ...series }]
+    vi.mocked(prisma.workoutStreamV2.findMany).mockResolvedValue(
+      storage === 'v2' ? (rows as any) : []
+    )
+    vi.mocked(prisma.workoutStream.findMany).mockResolvedValue(
+      storage === 'v1' ? (rows as any) : []
+    )
+    await expect(
+      queueWorkoutInsightEmail({ workoutId: 'ride', triggerType: 'on-analysis-ready' })
+    ).rejects.toThrow('chart projection reached')
+    expect(buildWorkoutStreamInsights).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        streams: storage === 'absent' ? undefined : series
+      })
+    )
+    expect(prisma.workoutStreamV2.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          time: true,
+          watts: true,
+          heartrate: true,
+          cadence: true,
+          distance: true,
+          grade: true,
+          moving: true,
+          surges: true
+        })
+      })
+    )
   })
 })

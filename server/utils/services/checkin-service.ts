@@ -1,3 +1,4 @@
+import { attachStreamsToWorkouts } from '../repositories/workoutStreamRepository'
 import { dailyCheckinRepository } from '../repositories/dailyCheckinRepository'
 import {
   formatUserDate,
@@ -239,19 +240,13 @@ export async function runGenerateDailyCheckin(payload: GenerateDailyCheckinPaylo
 
       wellnessRepository.getByDate(userId, today),
 
-      workoutRepository.getForUser(userId, {
-        startDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
-        orderBy: { date: 'desc' },
-        includeDuplicates: false,
-        include: {
-          streams: {
-            select: {
-              hrZoneTimes: true,
-              powerZoneTimes: true
-            }
-          }
-        }
-      }),
+      workoutRepository
+        .getForUser(userId, {
+          startDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
+          orderBy: { date: 'desc' },
+          includeDuplicates: false
+        })
+        .then((workouts) => attachStreamsToWorkouts(workouts, { baselineOnly: true })),
 
       prisma.user.findUnique({
         where: { id: userId },

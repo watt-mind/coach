@@ -376,6 +376,8 @@ export const deduplicationService = {
   async mergeDuplicateGroup(group: DuplicateGroup): Promise<MergeDuplicateGroupResult> {
     if (group.toDelete.length === 0) return { deletedCount: 0, keptCount: 1 }
 
+    // V1-by-design: this relation identifies only a legacy-table donor.
+    // V2 donors are selected independently inside the transaction below (CW-643).
     const duplicatesToDelete = await prisma.workout.findMany({
       where: { id: { in: group.toDelete } },
       select: { id: true, plannedWorkoutId: true, streams: { select: { id: true } } }

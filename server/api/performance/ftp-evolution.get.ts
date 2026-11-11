@@ -1,3 +1,4 @@
+import { workoutStreamRepository } from '../../utils/repositories/workoutStreamRepository'
 import { defineEventHandler, getQuery, createError } from 'h3'
 import { requireAuth } from '../../utils/auth-guard'
 import { workoutRepository } from '../../utils/repositories/workoutRepository'
@@ -253,13 +254,6 @@ export default defineEventHandler(async (event) => {
     tags,
     includeDuplicates: false,
     where: sport ? { type: sportTypeWhere } : undefined,
-    include: {
-      streams: {
-        select: {
-          watts: true
-        }
-      }
-    },
     orderBy: {
       date: 'asc'
     }
@@ -270,8 +264,12 @@ export default defineEventHandler(async (event) => {
     { date: Date; estimatedFtp: number; sourceWorkoutCount: number }
   >()
 
+  const estimationWatts = await workoutStreamRepository.findWattsByWorkoutIds(
+    estimationWorkouts.map((workout) => workout.id)
+  )
+
   estimationWorkouts.forEach((workout) => {
-    const watts = workout.streams?.watts as number[] | undefined
+    const watts = estimationWatts.get(workout.id)
     const fallbackPower = workout.normalizedPower || workout.averageWatts || 0
     const durationSec = workout.durationSec || 0
 
@@ -353,20 +351,17 @@ export default defineEventHandler(async (event) => {
       endDate,
       tags,
       includeDuplicates: false,
-      where: sport ? { type: sportTypeWhere } : undefined,
-      include: {
-        streams: {
-          select: {
-            watts: true
-          }
-        }
-      }
+      where: sport ? { type: sportTypeWhere } : undefined
     })) as any[]
+
+    const validationWatts = await workoutStreamRepository.findWattsByWorkoutIds(
+      powerWorkouts.map((workout) => workout.id)
+    )
 
     let lastValidatingEffortDate: Date | null = null
 
     powerWorkouts.forEach((workout) => {
-      const watts = workout.streams?.watts as number[] | undefined
+      const watts = validationWatts.get(workout.id)
 
       const fallbackPower = workout.normalizedPower || workout.averageWatts || 0
       const durationSec = workout.durationSec || 0
