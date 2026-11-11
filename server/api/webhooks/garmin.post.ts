@@ -13,7 +13,8 @@ defineRouteMeta({
     description:
       'Handles Garmin Push API notifications. Data is stored in SQL and processed asynchronously by the worker.',
     responses: {
-      200: { description: 'OK' }
+      200: { description: 'OK' },
+      503: { description: 'Durable storage unavailable' }
     }
   }
 })
@@ -25,8 +26,11 @@ export default defineEventHandler(async (event) => {
 
   try {
     // Garmin Push API sends lists of records (activities, sleeps, etc.)
-    // We log the entire payload to SQL with status PENDING for the worker poller to pick up
-    await logWebhookRequest({
+    // We log the entire payload to SQL with status PENDING for the worker poller to pick up.
+    // The acknowledgement is only sent after durable insertion: the worker can
+    // only claim persisted PENDING rows, so a failed insert must surface as a
+    // 503 instead of a false success (CW-836).
+    const logged = await logWebhookRequest({
       provider: 'garmin',
       eventType: 'PUSH',
       payload,
@@ -35,9 +39,21 @@ export default defineEventHandler(async (event) => {
       status: 'PENDING'
     })
 
+    if (!logged) {
+      console.error('[Garmin Webhook] Failed to log request: storage returned null')
+      throw createError({
+        statusCode: 503,
+        statusMessage: 'Garmin delivery not persisted'
+      })
+    }
+
     return { success: true }
   } catch (error: any) {
+    if (error?.statusCode === 503) throw error
     console.error('[Garmin Webhook] Failed to log request:', error)
-    return { success: true } // Always return 200 to Garmin
+    throw createError({
+      statusCode: 503,
+      statusMessage: 'Garmin delivery not persisted'
+    })
   }
 })
