@@ -73,6 +73,73 @@ import { registerTaskHandler } from '../server/utils/task-registry'
 //
 // Limits are generous enough that a well-behaved response never bumps into them
 // while still ruling out paragraph-length output in a label field.
+
+/**
+ * Local factory for the two `*_explanation_json` blocks under
+ * `athleteProfileSchema.properties.athlete_scores` (CW-653).
+ *
+ * The blocks are structurally identical and differ only in the root
+ * `description` (the subject) and the section-`title` example — both verbatim
+ * CW-368 prompt wording, passed through untouched. Returns a fresh object
+ * literal per call so the two schema sites never share nested references.
+ */
+function explanationJsonBlock(description: string, sectionTitleExample: string) {
+  return {
+    type: 'object',
+    description,
+    properties: {
+      executive_summary: {
+        type: 'string',
+        maxLength: 500,
+        description: '2-3 sentence overview (max 500 characters)'
+      },
+      sections: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: {
+              type: 'string',
+              maxLength: 80,
+              description: `Short section label of a few words, e.g. "${sectionTitleExample}" — a heading, not a sentence or a paragraph (max 80 characters)`
+            },
+            status: {
+              type: 'string',
+              enum: ['excellent', 'good', 'moderate', 'needs_improvement']
+            },
+            analysis_points: {
+              type: 'array',
+              items: { type: 'string', maxLength: 400 },
+              description: 'Analysis points, each 1-2 sentences (max 400 characters per item)'
+            }
+          }
+        }
+      },
+      recommendations: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: {
+              type: 'string',
+              maxLength: 80,
+              description:
+                'Short recommendation label of a few words — a heading, not a sentence or a paragraph (max 80 characters)'
+            },
+            description: {
+              type: 'string',
+              maxLength: 500,
+              description: '1-3 sentences describing the recommendation (max 500 characters)'
+            },
+            priority: { type: 'string', enum: ['high', 'medium', 'low'] }
+          }
+        }
+      }
+    },
+    required: ['executive_summary', 'sections', 'recommendations']
+  }
+}
+
 export const athleteProfileSchema = {
   type: 'object',
   properties: {
@@ -299,61 +366,10 @@ export const athleteProfileSchema = {
           maxLength: 800,
           description: 'Brief summary of current fitness level (max 800 characters)'
         },
-        current_fitness_explanation_json: {
-          type: 'object',
-          description: 'Structured explanation of current fitness',
-          properties: {
-            executive_summary: {
-              type: 'string',
-              maxLength: 500,
-              description: '2-3 sentence overview (max 500 characters)'
-            },
-            sections: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                    maxLength: 80,
-                    description:
-                      'Short section label of a few words, e.g. "Aerobic Base" — a heading, not a sentence or a paragraph (max 80 characters)'
-                  },
-                  status: {
-                    type: 'string',
-                    enum: ['excellent', 'good', 'moderate', 'needs_improvement']
-                  },
-                  analysis_points: {
-                    type: 'array',
-                    items: { type: 'string', maxLength: 400 },
-                    description: 'Analysis points, each 1-2 sentences (max 400 characters per item)'
-                  }
-                }
-              }
-            },
-            recommendations: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                    maxLength: 80,
-                    description:
-                      'Short recommendation label of a few words — a heading, not a sentence or a paragraph (max 80 characters)'
-                  },
-                  description: {
-                    type: 'string',
-                    maxLength: 500,
-                    description: '1-3 sentences describing the recommendation (max 500 characters)'
-                  },
-                  priority: { type: 'string', enum: ['high', 'medium', 'low'] }
-                }
-              }
-            }
-          },
-          required: ['executive_summary', 'sections', 'recommendations']
-        },
+        current_fitness_explanation_json: explanationJsonBlock(
+          'Structured explanation of current fitness',
+          'Aerobic Base'
+        ),
         recovery_capacity: {
           type: 'number',
           description: 'Ability to recover from training stress (1-10)',
@@ -365,61 +381,10 @@ export const athleteProfileSchema = {
           maxLength: 800,
           description: 'Brief summary of recovery capacity (max 800 characters)'
         },
-        recovery_capacity_explanation_json: {
-          type: 'object',
-          description: 'Structured explanation of recovery capacity',
-          properties: {
-            executive_summary: {
-              type: 'string',
-              maxLength: 500,
-              description: '2-3 sentence overview (max 500 characters)'
-            },
-            sections: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                    maxLength: 80,
-                    description:
-                      'Short section label of a few words, e.g. "Sleep Consistency" — a heading, not a sentence or a paragraph (max 80 characters)'
-                  },
-                  status: {
-                    type: 'string',
-                    enum: ['excellent', 'good', 'moderate', 'needs_improvement']
-                  },
-                  analysis_points: {
-                    type: 'array',
-                    items: { type: 'string', maxLength: 400 },
-                    description: 'Analysis points, each 1-2 sentences (max 400 characters per item)'
-                  }
-                }
-              }
-            },
-            recommendations: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                    maxLength: 80,
-                    description:
-                      'Short recommendation label of a few words — a heading, not a sentence or a paragraph (max 80 characters)'
-                  },
-                  description: {
-                    type: 'string',
-                    maxLength: 500,
-                    description: '1-3 sentences describing the recommendation (max 500 characters)'
-                  },
-                  priority: { type: 'string', enum: ['high', 'medium', 'low'] }
-                }
-              }
-            }
-          },
-          required: ['executive_summary', 'sections', 'recommendations']
-        },
+        recovery_capacity_explanation_json: explanationJsonBlock(
+          'Structured explanation of recovery capacity',
+          'Sleep Consistency'
+        ),
         nutrition_compliance: {
           type: 'number',
           description: 'Nutrition adherence and quality (1-10)',

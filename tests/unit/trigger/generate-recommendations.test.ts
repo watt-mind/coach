@@ -238,3 +238,123 @@ describe('runGenerateRecommendations — history column handling (CW-369)', () =
     expect(Object.hasOwn(data, 'history')).toBe(false)
   })
 })
+
+describe('runGenerateRecommendations — trend analysisData shape handling (CW-640)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  function trendRow(analysisData: unknown) {
+    return {
+      type: 'workout',
+      metric: 'Volume',
+      period: 7,
+      score: 8.5,
+      analysisData
+    }
+  }
+
+  /**
+   * Runs the task with the given trend rows and returns the prompt passed
+   * to the (mocked) AI generation call.
+   */
+  async function runWithTrends(trends: unknown[]) {
+    userFindUnique.mockResolvedValue({
+      name: 'Athlete',
+      language: 'English',
+      distanceUnits: 'km',
+      goals: []
+    })
+    trendFindMany.mockResolvedValue(trends)
+    workoutFindMany.mockResolvedValue([])
+    buildWorkoutSummary.mockReturnValue('None')
+    getActive.mockResolvedValue([])
+
+    generateStructuredAnalysis.mockResolvedValue({
+      // No new recommendations keeps the deduplication sweep (a second LLM
+      // call) out of these tests — we only care about prompt construction.
+      new_recommendations: [],
+      updated_recommendations: [],
+      completed_recommendation_ids: [],
+      dismissed_recommendation_ids: []
+    })
+
+    const { runGenerateRecommendations } = await import('../../../trigger/generate-recommendations')
+
+    const result = await runGenerateRecommendations({ userId: USER_ID })
+
+    expect(result).toMatchObject({ success: true })
+    expect(generateStructuredAnalysis).toHaveBeenCalledTimes(1)
+    return String(generateStructuredAnalysis.mock.calls[0]![0])
+  }
+
+  it.each([
+    {
+      name: 'valid string summary is used unchanged',
+      analysisData: { executive_summary: 'Volume trending up nicely.' },
+      expected: 'Summary: Volume trending up nicely.'
+    },
+    {
+      name: 'JSON null renders N/A',
+      analysisData: null,
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'array renders N/A',
+      analysisData: [{ executive_summary: 'Not an object.' }],
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'string renders N/A',
+      analysisData: '{"executive_summary":"coerced"}',
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'number renders N/A',
+      analysisData: 42,
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'boolean renders N/A',
+      analysisData: true,
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'missing summary renders N/A',
+      analysisData: {},
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'null summary renders N/A',
+      analysisData: { executive_summary: null },
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'non-string summary renders N/A',
+      analysisData: { executive_summary: 42 },
+      expected: 'Summary: N/A'
+    },
+    {
+      name: 'empty string summary renders N/A',
+      analysisData: { executive_summary: '' },
+      expected: 'Summary: N/A'
+    }
+  ])('$name', async ({ analysisData, expected }) => {
+    const prompt = await runWithTrends([trendRow(analysisData)])
+
+    expect(prompt).toContain('- [WORKOUT - Volume (7d)] Score: 8.5/10. ' + expected)
+  })
+
+  it('completes with mixed valid/invalid trend shapes in one run', async () => {
+    const prompt = await runWithTrends([
+      trendRow({ executive_summary: 'Steady progress.' }),
+      trendRow(null),
+      trendRow('coerced'),
+      trendRow(7)
+    ])
+
+    expect(prompt).toContain('Summary: Steady progress.')
+    expect(prompt.match(/Summary: N\/A/g)?.length).toBe(3)
+  })
+})

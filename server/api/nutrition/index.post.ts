@@ -1,10 +1,13 @@
 import { z } from 'zod/v3'
 import { requireAuth } from '../../utils/auth-guard'
-import { nutritionRepository } from '../../utils/repositories/nutritionRepository'
+import {
+  CONCURRENT_UPDATE_CONFLICT,
+  nutritionRepository
+} from '../../utils/repositories/nutritionRepository'
 import { metabolicService } from '../../utils/services/metabolicService'
 import { nutritionPlanService } from '../../utils/services/nutritionPlanService'
 import { getUserNutritionSettings } from '../../utils/nutrition/settings'
-import { getUserTimezone, getStartOfLocalDateUTC } from '../../utils/date'
+import { getUserTimezone } from '../../utils/date'
 import { recalculateNutritionTotals } from '../../utils/nutrition/totals'
 import { pickMealScheduledTime } from '../../utils/nutrition/meal-pattern'
 
@@ -170,13 +173,6 @@ export default defineEventHandler(async (event) => {
   // Source attribution
   const source = event.context.authType === 'oauth' ? `oauth:${event.context.oauthAppId}` : 'manual'
 
-  let calcCalories = 0
-  let calcCarbs = 0
-  let calcProtein = 0
-  let calcFat = 0
-  let calcFiber = 0
-  let calcSugar = 0
-
   for (const item of items) {
     const itemDate = new Date(item.logged_at)
     // Use formatUserTime to get HH and mm in user's timezone
@@ -212,71 +208,75 @@ export default defineEventHandler(async (event) => {
     }
 
     mealGroups[bestBucket].push(enrichedItem)
-
-    // Add to calculated totals
-    calcCalories += item.calories || 0
-    calcCarbs += item.carbs || 0
-    calcProtein += item.protein || 0
-    calcFat += item.fat || 0
-    calcFiber += item.fiber || 0
-    calcSugar += item.sugar || 0
   }
 
-  // 5. Build final payload
-  const existing = await nutritionRepository.getByDate(userId, targetDate)
+  // IDs and buckets are fixed above; each retry merges against a fresh committed day.
+  let record
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = await nutritionRepository.getByDate(userId, targetDate)
 
-  // OAuth / companion clients often POST one item at a time. Append for oauth so
-  // incremental quick-logs do not wipe prior same-source items. Session/API-key
-  // uploads still replace-by-source within meals that include incoming items.
-  // Buckets with no incoming items are left untouched (avoids clearing other meals).
-  const mergeMeal = (mealKey: 'breakfast' | 'lunch' | 'dinner' | 'snacks') => {
-    const existingItems = ((existing as any)?.[mealKey] as any[]) || []
-    const incoming = (mealGroups[mealKey] as any[]) || []
-    if (incoming.length === 0) {
-      return existingItems
+    // OAuth / companion clients often POST one item at a time. Append for oauth so
+    // incremental quick-logs do not wipe prior same-source items. Session/API-key
+    // uploads still replace-by-source within meals that include incoming items.
+    // Buckets with no incoming items are left untouched (avoids clearing other meals).
+    const mergeMeal = (mealKey: 'breakfast' | 'lunch' | 'dinner' | 'snacks') => {
+      const existingItems = ((existing as any)?.[mealKey] as any[]) || []
+      const incoming = (mealGroups[mealKey] as any[]) || []
+      if (incoming.length === 0) {
+        return existingItems
+      }
+      if (event.context.authType === 'oauth') {
+        return [...existingItems, ...incoming]
+      }
+      const kept = existingItems.filter((item) => item?.source !== source)
+      return [...kept, ...incoming]
     }
-    if (event.context.authType === 'oauth') {
-      return [...existingItems, ...incoming]
+
+    const finalMeals: any = {
+      breakfast: mergeMeal('breakfast'),
+      lunch: mergeMeal('lunch'),
+      dinner: mergeMeal('dinner'),
+      snacks: mergeMeal('snacks')
     }
-    const kept = existingItems.filter((item) => item?.source !== source)
-    return [...kept, ...incoming]
+
+    const finalData: any = {
+      ...finalMeals,
+      rawJson: rawJson || (existing as any)?.rawJson || null,
+      waterMl: totals.waterMl ?? (existing as any)?.waterMl ?? 0
+    }
+
+    const mergedTotals = recalculateNutritionTotals(finalData)
+
+    // Use overrides if provided, otherwise use recalculated totals from the merged day.
+    finalData.calories =
+      totals.calories !== undefined ? totals.calories : Math.round(mergedTotals.calories)
+    finalData.carbs = totals.carbs !== undefined ? totals.carbs : mergedTotals.carbs
+    finalData.protein = totals.protein !== undefined ? totals.protein : mergedTotals.protein
+    finalData.fat = totals.fat !== undefined ? totals.fat : mergedTotals.fat
+    finalData.fiber = mergedTotals.fiber
+    finalData.sugar = mergedTotals.sugar
+    if (totals.waterMl === undefined) {
+      finalData.waterMl = mergedTotals.waterMl
+    }
+
+    const saved = await nutritionRepository.saveWithVersionCheck(
+      userId,
+      targetDate,
+      existing,
+      finalData,
+      source
+    )
+    if (saved !== CONCURRENT_UPDATE_CONFLICT) {
+      record = saved
+      break
+    }
   }
-
-  const finalMeals: any = {
-    breakfast: mergeMeal('breakfast'),
-    lunch: mergeMeal('lunch'),
-    dinner: mergeMeal('dinner'),
-    snacks: mergeMeal('snacks')
+  if (!record) {
+    throw createError({
+      statusCode: 409,
+      message: 'This nutrition entry was updated elsewhere. Please retry the upload.'
+    })
   }
-
-  const finalData: any = {
-    ...finalMeals,
-    rawJson: rawJson || (existing as any)?.rawJson || null,
-    waterMl: totals.waterMl ?? (existing as any)?.waterMl ?? 0
-  }
-
-  const mergedTotals = recalculateNutritionTotals(finalData)
-
-  // Use overrides if provided, otherwise use recalculated totals from the merged day.
-  finalData.calories =
-    totals.calories !== undefined ? totals.calories : Math.round(mergedTotals.calories)
-  finalData.carbs = totals.carbs !== undefined ? totals.carbs : mergedTotals.carbs
-  finalData.protein = totals.protein !== undefined ? totals.protein : mergedTotals.protein
-  finalData.fat = totals.fat !== undefined ? totals.fat : mergedTotals.fat
-  finalData.fiber = mergedTotals.fiber
-  finalData.sugar = mergedTotals.sugar
-  if (totals.waterMl === undefined) {
-    finalData.waterMl = mergedTotals.waterMl
-  }
-
-  // 6. Upsert to DB
-  const { record } = await nutritionRepository.upsert(
-    userId,
-    targetDate,
-    { ...finalData, userId, date: targetDate },
-    finalData,
-    source
-  )
 
   // 7. REACTIVE: Recalculate fueling plan
   try {

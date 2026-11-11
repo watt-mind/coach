@@ -280,13 +280,15 @@ export const teamRepository = {
         const shouldMask = options.maskSensitiveData && m.user.teamVisibility === 'COACHES_ONLY'
 
         if (shouldMask) {
+          // The raw user relation contains private metrics; retain only membership metadata.
+          const { user, ...membership } = m
           return {
-            ...m,
+            ...membership,
             canViewDetails: false,
             athlete: {
-              id: m.user.id,
-              name: m.user.name,
-              image: m.user.image,
+              id: user.id,
+              name: user.name,
+              image: user.image,
               isMasked: true,
               canViewDetails: false
             }

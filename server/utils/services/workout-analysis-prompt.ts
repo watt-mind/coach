@@ -896,6 +896,14 @@ export function buildAnalysisFactsPromptBlock(
           path: 'performanceSignals.applicability.pacingDrift.reason',
           label: 'Pacing Drift Applicability Reason'
         },
+        {
+          path: 'performanceSignals.applicability.cadenceStability.applicable',
+          label: 'Cadence Stability Applicable'
+        },
+        {
+          path: 'performanceSignals.applicability.cadenceStability.reason',
+          label: 'Cadence Stability Applicability Reason'
+        },
         { path: 'performanceSignals.decoupling.interpretable', label: 'Decoupling Interpretable' },
         { path: 'performanceSignals.decoupling.reason', label: 'Decoupling Reason' },
         { path: 'performanceSignals.decoupling.effective', label: 'Decoupling Effective' },

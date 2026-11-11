@@ -67,12 +67,34 @@ export const ANALYSIS_STATUS_FALLBACK_COLOR: AnalysisStatusColor = 'neutral'
  * Map an analysis section status to a Nuxt UI colour token.
  *
  * Case- and whitespace-insensitive: stored analyses have carried `Needs_Improvement`
- * and padded values. Call sites that need CSS classes derive them from the returned
- * token rather than re-deriving the mapping.
+ * and padded values. Call sites that need CSS classes use getAnalysisStatusClass so both the
+ * severity mapping and its theme palette stay shared.
  */
 export function getAnalysisStatusColor(status?: string | null): AnalysisStatusColor {
   if (!status) return ANALYSIS_STATUS_FALLBACK_COLOR
   const normalised = String(status).trim().toLowerCase()
   if (!normalised) return ANALYSIS_STATUS_FALLBACK_COLOR
   return ANALYSIS_STATUS_COLORS[normalised] ?? ANALYSIS_STATUS_FALLBACK_COLOR
+}
+
+/**
+ * Opaque theme pairs keep small status labels above AA (4.5:1), independent of
+ * the underlying card. Brand green is deliberately excluded from light mode.
+ * Keep complete utility names here so Tailwind can discover every class.
+ */
+export const ANALYSIS_STATUS_CLASSES = Object.freeze({
+  success:
+    'text-emerald-800 bg-emerald-100 border-emerald-300 dark:text-emerald-200 dark:bg-emerald-950 dark:border-emerald-700 ring-0',
+  warning:
+    'text-amber-800 bg-amber-100 border-amber-300 dark:text-amber-200 dark:bg-amber-950 dark:border-amber-700 ring-0',
+  error:
+    'text-red-800 bg-red-100 border-red-300 dark:text-red-200 dark:bg-red-950 dark:border-red-700 ring-0',
+  info: 'text-blue-800 bg-blue-100 border-blue-300 dark:text-blue-200 dark:bg-blue-950 dark:border-blue-700 ring-0',
+  neutral:
+    'text-zinc-800 bg-zinc-100 border-zinc-300 dark:text-zinc-200 dark:bg-zinc-950 dark:border-zinc-700 ring-0'
+} satisfies Record<AnalysisStatusColor, string>)
+
+/** Shared theme classes for current, legacy and missing analysis statuses. */
+export function getAnalysisStatusClass(status?: string | null): string {
+  return ANALYSIS_STATUS_CLASSES[getAnalysisStatusColor(status)]
 }

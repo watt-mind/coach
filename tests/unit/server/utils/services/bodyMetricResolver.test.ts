@@ -123,4 +123,50 @@ describe('bodyMetricResolver', () => {
     expect(result.source.source).toBe('withings')
     expect(result.preferredSource).toBe('withings')
   })
+  it('excludes retired entries from history and preferred resolution, then uses profile fallback', async () => {
+    const retired = {
+      id: 'cleared',
+      userId: 'user-1',
+      metricKey: 'weight',
+      value: 70,
+      source: 'withings',
+      recordedAt: new Date('2026-03-04'),
+      isDeleted: true
+    }
+    const rows: any[] = [retired, { ...retired, id: 'fat', metricKey: 'body_fat_pct', value: 18 }]
+    const select = (where: any) =>
+      rows.filter((row) =>
+        Object.entries(where).every(
+          ([key, value]) => value === undefined || key === 'recordedAt' || row[key] === value
+        )
+      )
+    vi.mocked(prisma.bodyMeasurementEntry.findMany).mockImplementation(async ({ where }: any) =>
+      select(where)
+    )
+    vi.mocked(prisma.bodyMeasurementEntry.findFirst).mockImplementation(
+      async ({ where }: any) => select(where)[0] || null
+    )
+    const user = {
+      weight: 84.5,
+      weightSourceMode: 'AUTO',
+      dashboardSettings: {
+        bodyMetrics: { preferredSources: { weight: 'withings', body_fat_pct: 'withings' } }
+      }
+    }
+    const { bodyMeasurementRepository } =
+      await import('../../../../../server/utils/repositories/bodyMeasurementRepository')
+    expect(await bodyMeasurementRepository.listForUser('user-1')).toEqual([])
+    expect(
+      await bodyMeasurementRepository.listForUser('user-1', { includeDeleted: true })
+    ).toHaveLength(2)
+    expect((await bodyMetricResolver.resolveEffectiveWeight('user-1', user)).value).toBe(84.5)
+    expect(
+      await bodyMetricResolver.resolveLatestMeasurement('user-1', 'body_fat_pct', user)
+    ).toBeNull()
+    expect(prisma.bodyMeasurementEntry.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'user-1', metricKey: 'weight', isDeleted: false }
+      })
+    )
+  })
 })

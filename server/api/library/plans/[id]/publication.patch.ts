@@ -39,6 +39,22 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 404, message: 'Plan not found.' })
   }
 
+  const visibility = body.visibility ?? existingPlan.visibility
+  const teamId = body.teamId === undefined ? existingPlan.teamId : body.teamId
+
+  if (visibility === 'TEAM') {
+    if (!teamId?.trim()) {
+      throw createError({ statusCode: 400, message: 'Team plans require a team ID.' })
+    }
+
+    const membership = await prisma.teamMember.findFirst({
+      where: { userId, teamId, status: 'ACTIVE' }
+    })
+    if (!membership) {
+      throw createError({ statusCode: 403, message: 'Active team membership is required.' })
+    }
+  }
+
   const availableWeekIds = new Set(
     existingPlan.blocks.flatMap((block) => block.weeks.map((week) => week.id))
   )
@@ -46,7 +62,7 @@ export default defineEventHandler(async (event) => {
   const slug = normalizePublicPlanSlug(body.slug, body.slug ? undefined : existingPlan.name)
 
   validatePublicationState({
-    visibility: body.visibility ?? existingPlan.visibility,
+    visibility,
     accessState: body.accessState ?? existingPlan.accessState,
     slug: slug ?? existingPlan.slug,
     publicDescription: body.publicDescription ?? existingPlan.publicDescription,

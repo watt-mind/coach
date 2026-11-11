@@ -6,7 +6,12 @@ import { attachStreamsToWorkouts } from '../../utils/repositories/workoutStreamR
 import { sportSettingsRepository } from '../../utils/repositories/sportSettingsRepository'
 import { calculatePowerZones, calculateHrZones } from '../../utils/zones'
 import { getServerSession } from '../../utils/session'
-import { getUserTimezone, getStartOfYearUTC, getUserLocalDate } from '../../utils/date'
+import {
+  getUserTimezone,
+  getStartOfYearUTC,
+  getUserLocalDate,
+  getEndOfDayUTC
+} from '../../utils/date'
 import { parseTagQueryParam } from '../../utils/workout-tags'
 
 defineRouteMeta({
@@ -45,14 +50,15 @@ export default defineEventHandler(async (event) => {
   const query = getQuery(event)
   const sport = query.sport === 'all' ? undefined : (query.sport as string)
   const tags = parseTagQueryParam(query.tags)
-  const endDate = getUserLocalDate(timezone)
+  const today = getUserLocalDate(timezone)
+  const endDate = getEndOfDayUTC(timezone)
   let startDate: Date
   let numWeeks: number
 
   if (query.weeks === 'YTD') {
     startDate = getStartOfYearUTC(timezone)
     // Calculate weeks since start of year
-    const diffTime = Math.abs(endDate.getTime() - startDate.getTime())
+    const diffTime = Math.abs(today.getTime() - startDate.getTime())
     numWeeks = Math.ceil(diffTime / (1000 * 60 * 60 * 24 * 7))
   } else {
     numWeeks = parseInt(query.weeks as string) || 12

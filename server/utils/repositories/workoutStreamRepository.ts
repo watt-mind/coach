@@ -1051,12 +1051,21 @@ export const workoutStreamRepository = {
     }
 
     const writeData: any = { ...meta }
+    const updateData: any = { ...meta }
     for (const [column, sanitize] of Object.entries(V2_ARRAY_WRITE_SANITIZERS)) {
       writeData[column] = sanitize(rawSeries[column])
+      if (
+        column === 'lat' || column === 'lng'
+          ? latlng !== undefined
+          : rawSeries[column] !== undefined
+      ) {
+        updateData[column] = writeData[column]
+      }
     }
     // CW-453: nothing may reach Postgres with a NULL element in a numeric or
     // boolean array -- that is what made 24% of stream rows unreadable.
     enforceNoNullStreamElements(writeData, workoutId)
+    enforceNoNullStreamElements(updateData, workoutId)
 
     return (prisma as any).workoutStreamV2.upsert({
       where: { workoutId },
@@ -1064,7 +1073,7 @@ export const workoutStreamRepository = {
         workout: { connect: { id: workoutId } },
         ...writeData
       },
-      update: { ...writeData, updatedAt: new Date() }
+      update: { ...updateData, updatedAt: new Date() }
     })
   }
 }

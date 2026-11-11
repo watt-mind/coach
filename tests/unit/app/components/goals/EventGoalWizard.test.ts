@@ -74,4 +74,70 @@ describe('EventGoalWizard', () => {
 
     expect(wrapper.text()).toContain('0 km')
   })
+  it.each([
+    {
+      name: 'omitted',
+      metadata: {},
+      distance: undefined,
+      elevation: undefined,
+      duration: undefined,
+      type: 'Road Race',
+      terrain: 'Rolling'
+    },
+    {
+      name: 'zero',
+      metadata: { distance: 0, elevation: 0, expectedDuration: 0 },
+      distance: 0,
+      elevation: 0,
+      duration: 0,
+      type: 'Road Race',
+      terrain: 'Rolling'
+    }
+  ])(
+    'replaces primary event metadata with $name values in the creation payload',
+    async (scenario) => {
+      const first = {
+        id: 'first',
+        title: 'First',
+        date: '2026-10-15',
+        distance: 100,
+        elevation: 2000,
+        expectedDuration: 5,
+        type: 'Trail',
+        terrain: 'Hilly'
+      }
+      const second = { id: 'second', title: 'Second', date: '2026-10-16', ...scenario.metadata }
+      fetchMock.mockResolvedValue([first, second])
+      const wrapper = mount(EventGoalWizard, {
+        global: {
+          stubs: {
+            UButton: { template: '<button><slot /></button>' },
+            UIcon: true,
+            UFormField: { template: '<div><slot /></div>' },
+            UInput: true,
+            UInputNumber: true,
+            USelect: true,
+            UTextarea: true
+          }
+        }
+      })
+      const vm = wrapper.vm as any
+      vm.selectType('EVENT')
+      await flushPromises()
+      vm.toggleUserEvent(first)
+      vm.toggleUserEvent(second)
+      await vm.saveGoal()
+      const payload = fetchMock.mock.calls.find((call) => call[0] === '/api/goals')?.[1].body
+      expect(payload).toMatchObject({
+        distance: scenario.distance,
+        elevation: scenario.elevation,
+        duration: scenario.duration,
+        eventType: scenario.type,
+        terrain: scenario.terrain
+      })
+      expect(payload.aiContext).toContain(
+        `Distance: ${scenario.distance}km. Elevation: ${scenario.elevation}m. Terrain: ${scenario.terrain}. Expected Duration: ${scenario.duration}h.`
+      )
+    }
+  )
 })

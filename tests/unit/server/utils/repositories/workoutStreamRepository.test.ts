@@ -99,6 +99,29 @@ describe('workoutStreamRepository', () => {
   })
 
   describe('upsert', () => {
+    it('preserves omitted series while retaining create defaults', async () => {
+      await workoutStreamRepository.upsert('workout-1', { hrZoneTimes: [1, 2], latlng: undefined })
+      const { create, update } = workoutStreamV2.upsert.mock.calls.at(-1)![0]
+      expect(update).toEqual({ hrZoneTimes: [1, 2], updatedAt: expect.any(Date) })
+      expect(create).toMatchObject({ time: [], watts: [], lat: [], lng: [] })
+    })
+
+    it('writes supplied empty and sanitized series including coordinates', async () => {
+      await workoutStreamRepository.upsert('workout-1', {
+        time: [],
+        cadence: [null, 88] as unknown as number[],
+        latlng: [[48.85, 2.35], null] as unknown as [number, number][]
+      })
+      const { update } = workoutStreamV2.upsert.mock.calls.at(-1)![0]
+      expect(update).toEqual({
+        time: [],
+        cadence: [0, 88],
+        lat: [48.85],
+        lng: [2.35],
+        updatedAt: expect.any(Date)
+      })
+    })
+
     it('sanitizes nullable cadence values before writing to WorkoutStreamV2', async () => {
       await workoutStreamRepository.upsert('workout-1', {
         cadence: [null, null, 88, 90] as unknown as number[]

@@ -123,3 +123,140 @@ describe('quota engine', () => {
     })
   })
 })
+
+describe('unified recurring report quota (CW-846)', () => {
+  const freeUser = {
+    subscriptionTier: 'FREE',
+    subscriptionStatus: 'NONE',
+    subscriptionPeriodEnd: null,
+    trialEndsAt: null,
+    timezone: 'UTC'
+  } as any
+
+  interface FakeUsageRow {
+    userId: string
+    operation: string
+    success: boolean
+    counted: boolean
+    createdAt: Date
+  }
+
+  function mockUsageTable(rows: FakeUsageRow[]) {
+    vi.mocked(prisma.$queryRaw).mockImplementation(async (strings: any, ...params: any[]) => {
+      const sql = Array.isArray(strings) ? strings.join('?') : String(strings)
+      // The engine must filter in SQL: exact operation, counted successes only.
+      expect(sql).toContain('"operation"')
+      expect(sql).toContain('"success"')
+      expect(sql).toContain('"counted"')
+
+      const [userId, operation, window] = params
+      expect(userId).toBe('user-1')
+      expect(operation).toBe('unified_report_generation')
+      expect(window).toBe('30 days')
+
+      const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+      const matching = rows.filter(
+        (row) =>
+          row.userId === userId &&
+          row.operation === operation &&
+          row.success === true &&
+          row.counted === true &&
+          row.createdAt >= cutoff
+      )
+      const firstUsedAt =
+        matching.length > 0
+          ? matching.map((row) => row.createdAt).sort((a, b) => a.getTime() - b.getTime())[0]
+          : null
+      return [{ count: matching.length, firstUsedAt }] as any
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(freeUser)
+    vi.mocked(getActivePromotionalGrant).mockResolvedValue(null)
+    vi.mocked(prisma.quotaDenial.create).mockResolvedValue({} as any)
+  })
+
+  it('denies the next recurring report at the FREE limit of 1 per 30 days', async () => {
+    mockUsageTable([
+      {
+        userId: 'user-1',
+        operation: 'unified_report_generation',
+        success: true,
+        counted: true,
+        createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000)
+      }
+    ])
+
+    const { checkQuota } = await import('../../../../server/utils/quotas/engine')
+
+    await expect(checkQuota('user-1', 'unified_report_generation')).rejects.toMatchObject({
+      statusCode: 429,
+      quotaExceeded: true,
+      data: {
+        code: 'QUOTA_EXCEEDED',
+        operation: 'unified_report_generation',
+        limit: 1,
+        used: 1,
+        remaining: 0,
+        window: '30 days',
+        quotaExceeded: true
+      }
+    })
+  })
+
+  it('allows recurring reports below the limit', async () => {
+    mockUsageTable([])
+
+    const { checkQuota } = await import('../../../../server/utils/quotas/engine')
+
+    const status = await checkQuota('user-1', 'unified_report_generation')
+    expect(status).toMatchObject({
+      allowed: true,
+      used: 0,
+      limit: 1,
+      operation: 'unified_report_generation'
+    })
+  })
+
+  it('does not consume allowance for failed, uncounted, out-of-window, or legacy-operation rows', async () => {
+    const recent = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000)
+    mockUsageTable([
+      {
+        userId: 'user-1',
+        operation: 'unified_report_generation',
+        success: false,
+        counted: true,
+        createdAt: recent
+      },
+      {
+        userId: 'user-1',
+        operation: 'unified_report_generation',
+        success: true,
+        counted: false,
+        createdAt: recent
+      },
+      {
+        userId: 'user-1',
+        operation: 'unified_report_generation',
+        success: true,
+        counted: true,
+        createdAt: old
+      },
+      {
+        userId: 'user-1',
+        operation: 'nutrition_analysis',
+        success: true,
+        counted: true,
+        createdAt: recent
+      }
+    ])
+
+    const { checkQuota } = await import('../../../../server/utils/quotas/engine')
+
+    const status = await checkQuota('user-1', 'unified_report_generation')
+    expect(status).toMatchObject({ allowed: true, used: 0, limit: 1 })
+  })
+})

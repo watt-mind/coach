@@ -1,3 +1,4 @@
+import { workoutStreamRepository } from './repositories/workoutStreamRepository'
 import { prisma } from './db'
 import { queueEmail } from './email-service'
 import { formatUserDate, getStartOfDaysAgoUTC } from './date'
@@ -687,7 +688,7 @@ export async function queueWorkoutInsightEmail(options: QueueWorkoutInsightEmail
     return { queued: false, reason: 'emails_disabled_by_environment' }
   }
 
-  const workout = await prisma.workout.findUnique({
+  const workoutRecord = await prisma.workout.findUnique({
     where: { id: workoutId },
     select: {
       id: true,
@@ -710,26 +711,19 @@ export async function queueWorkoutInsightEmail(options: QueueWorkoutInsightEmail
       overallScore: true,
       decoupling: true,
       wPrime: true,
-      wBalDepletion: true,
-      streams: {
-        select: {
-          time: true,
-          watts: true,
-          heartrate: true,
-          cadence: true,
-          distance: true,
-          grade: true,
-          moving: true,
-          surges: true
-        }
-      }
+      wBalDepletion: true
     }
   })
 
-  if (!workout) {
+  if (!workoutRecord) {
     logWorkoutInsightSkip({ ...logContext, reason: 'workout_not_found' })
     return { queued: false, reason: 'workout_not_found' }
   }
+
+  const streamMap = await workoutStreamRepository.findManyByWorkoutIds([workoutRecord.id], {
+    fields: ['cadence', 'distance', 'grade', 'moving', 'surges']
+  })
+  const workout = { ...workoutRecord, streams: streamMap.get(workoutRecord.id) ?? null }
 
   const [user, pref] = await Promise.all([
     prisma.user.findUnique({

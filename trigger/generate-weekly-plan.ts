@@ -17,6 +17,8 @@ import {
   formatUserDate,
   getStartOfDayUTC,
   getEndOfDayUTC,
+  getStartOfLocalDateUTC,
+  getEndOfLocalDateUTC,
   formatDateUTC,
   calculateAge
 } from '../server/utils/date'
@@ -225,23 +227,38 @@ export async function runGenerateWeeklyPlan(payload: {
   // Set to end of day in local time -> UTC
   let alignedWeekEndUTC = getEndOfDayUTC(timezone, alignedWeekEnd)
 
+  let hasPersistedWeek = false
   if (trainingWeekId) {
     const trainingWeek = await prisma.trainingWeek.findUnique({
       where: { id: trainingWeekId }
     })
     if (trainingWeek) {
-      alignedWeekStart = getStartOfDayUTC(timezone, trainingWeek.startDate)
-      alignedWeekEndUTC = getEndOfDayUTC(timezone, trainingWeek.endDate)
-      const alignedWeekEndStart = getStartOfDayUTC(timezone, trainingWeek.endDate)
-      const dayMs = 24 * 60 * 60 * 1000
+      hasPersistedWeek = true
+      alignedWeekStart = getStartOfLocalDateUTC(
+        timezone,
+        trainingWeek.startDate.toISOString().slice(0, 10)
+      )
+      alignedWeekEndUTC = getEndOfLocalDateUTC(
+        timezone,
+        trainingWeek.endDate.toISOString().slice(0, 10)
+      )
+      // Stored boundaries are UTC-midnight calendar dates, not timezone instants.
       effectiveDaysToPlan =
-        Math.round((alignedWeekEndStart.getTime() - alignedWeekStart.getTime()) / dayMs) + 1
+        Math.round((trainingWeek.endDate.getTime() - trainingWeek.startDate.getTime()) / 86400000) +
+        1
     } else {
       logger.warn('trainingWeekId provided but not found, using payload dates', {
         trainingWeekId
       })
     }
   }
+
+  // PlannedWorkout.date and TrainingWeek boundaries use UTC calendar dates.
+  // Keep standalone generation's existing timestamp behavior unchanged.
+  const calendarStart = new Date(`${formatUserDate(alignedWeekStart, timezone)}T00:00:00Z`)
+  const calendarEnd = new Date(`${formatUserDate(alignedWeekEndUTC, timezone)}T00:00:00Z`)
+  const workoutRangeStart = hasPersistedWeek ? calendarStart : alignedWeekStart
+  const workoutRangeEnd = hasPersistedWeek ? calendarEnd : alignedWeekEndUTC
 
   logger.log('Week boundaries calculated (Timezone Aware)', {
     timezone,
@@ -341,8 +358,8 @@ export async function runGenerateWeeklyPlan(payload: {
         OR: [
           {
             date: {
-              gte: alignedWeekStart,
-              lte: alignedWeekEndUTC
+              gte: workoutRangeStart,
+              lte: workoutRangeEnd
             }
           },
           ...(trainingWeekId ? [{ trainingWeekId }] : [])
@@ -864,8 +881,8 @@ Maintain your **${aiSettings.aiPersona}** persona throughout the plan's reasonin
     // First, handle existing workouts
     const scope = buildWorkoutCleanupQuery({
       userId,
-      startDate: alignedWeekStart,
-      endDate: alignedWeekEndUTC,
+      startDate: workoutRangeStart,
+      endDate: workoutRangeEnd,
       trainingWeekId,
       anchorWorkoutIds
     })
@@ -942,12 +959,14 @@ Maintain your **${aiSettings.aiPersona}** persona throughout the plan's reasonin
           return null
         }
 
-        // Strict validation: Date MUST be within the planned week
-        // We compare timestamps to avoid timezone confusion, but add a buffer
+        // Persisted weeks use exact calendar bounds; standalone generation retains
+        // its existing timestamp buffer.
         const buffer = 12 * 60 * 60 * 1000
         if (
-          workoutDate.getTime() < alignedWeekStart.getTime() - buffer ||
-          workoutDate.getTime() > alignedWeekEndUTC.getTime() + buffer
+          hasPersistedWeek
+            ? workoutDate < calendarStart || workoutDate > calendarEnd
+            : workoutDate.getTime() < alignedWeekStart.getTime() - buffer ||
+              workoutDate.getTime() > alignedWeekEndUTC.getTime() + buffer
         ) {
           logger.error('Generated date out of range', {
             date: d.date,
@@ -1013,8 +1032,11 @@ Maintain your **${aiSettings.aiPersona}** persona throughout the plan's reasonin
         targetTrainingWeekId = undefined // Fallback to search logic
       } else {
         targetTrainingWeekRange = {
-          start: getStartOfDayUTC(timezone, verifiedWeek.startDate),
-          end: getEndOfDayUTC(timezone, verifiedWeek.endDate)
+          start: getStartOfLocalDateUTC(
+            timezone,
+            verifiedWeek.startDate.toISOString().slice(0, 10)
+          ),
+          end: getEndOfLocalDateUTC(timezone, verifiedWeek.endDate.toISOString().slice(0, 10))
         }
         logger.log('Using explicitly passed TrainingWeek ID', { trainingWeekId })
       }
@@ -1032,18 +1054,21 @@ Maintain your **${aiSettings.aiPersona}** persona throughout the plan's reasonin
             }
           },
           startDate: {
-            lte: alignedWeekStart
+            lte: calendarStart
           },
           endDate: {
-            gte: alignedWeekEndUTC
+            gte: calendarEnd
           }
         }
       })
       if (trainingWeek) {
         targetTrainingWeekId = trainingWeek.id
         targetTrainingWeekRange = {
-          start: getStartOfDayUTC(timezone, trainingWeek.startDate),
-          end: getEndOfDayUTC(timezone, trainingWeek.endDate)
+          start: getStartOfLocalDateUTC(
+            timezone,
+            trainingWeek.startDate.toISOString().slice(0, 10)
+          ),
+          end: getEndOfLocalDateUTC(timezone, trainingWeek.endDate.toISOString().slice(0, 10))
         }
       }
     }

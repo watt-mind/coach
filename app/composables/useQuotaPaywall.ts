@@ -39,9 +39,10 @@ export interface QuotaPaywallOptions {
 export function useQuotaPaywall() {
   const upgradeModal = useUpgradeModal()
   const userStore = useUserStore()
+  const route = useRoute()
   const quotasState = useState<QuotaSummaryResponse | null>('profileQuotaSummary', () => null)
   const quotasFetchedAt = useState<number>('profileQuotaSummaryFetchedAt', () => 0)
-  let refreshPromise: Promise<QuotaSummaryResponse> | null = null
+  let refreshPromise: Promise<QuotaSummaryResponse | null> | null = null
 
   const quotaSummary = computed(() => quotasState.value)
 
@@ -55,12 +56,36 @@ export function useQuotaPaywall() {
     if (!options.force && !snapshotNeedsRefresh()) return quotasState.value!
     if (refreshPromise) return refreshPromise
 
-    refreshPromise = ($fetch as any)('/api/profile/quotas') as Promise<QuotaSummaryResponse>
+    // Share the handled result, so concurrent callers never inherit a rejection.
+    refreshPromise = (async () => {
+      try {
+        const summary = await (($fetch as any)(
+          '/api/profile/quotas'
+        ) as Promise<QuotaSummaryResponse>)
+        quotasState.value = summary
+        quotasFetchedAt.value = Date.now()
+        return summary
+      } catch (error) {
+        quotasState.value = null
+        quotasFetchedAt.value = 0
+        const failure = error as {
+          statusCode?: number
+          status?: number
+          response?: { status: number }
+        }
+        if ((failure?.statusCode ?? failure?.status ?? failure?.response?.status) === 401) {
+          // Match the auth middleware's unauthenticated redirect.
+          try {
+            await navigateTo(`/login?callbackUrl=${encodeURIComponent(route.fullPath)}`)
+          } catch {
+            // A failed navigation must not turn an expected auth failure into a rejection.
+          }
+        }
+        return null
+      }
+    })()
     try {
-      const summary = await refreshPromise
-      quotasState.value = summary
-      quotasFetchedAt.value = Date.now()
-      return summary
+      return await refreshPromise
     } finally {
       refreshPromise = null
     }
@@ -150,8 +175,10 @@ export function useQuotaPaywall() {
   }) {
     // Paid tiers have limits too — skipping the check here sent Supporter and
     // Pro athletes into a raw server error instead of the paywall.
-    await ensureQuotasLoaded()
+    const summary = await ensureQuotasLoaded()
+    if (!summary) return
     const quota = getQuotaForOperation(params.operation)
+    if (!quota) return
     if (isQuotaExhausted(quota)) {
       await showQuotaPaywall({
         operation: params.operation,

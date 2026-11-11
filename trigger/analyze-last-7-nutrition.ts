@@ -287,7 +287,7 @@ export const analyzeLast7NutritionTask = task({
         'flash',
         {
           userId,
-          operation: 'last_7_nutrition_analysis',
+          operation: 'unified_report_generation',
           entityType: 'Nutrition',
           entityId: undefined
         }

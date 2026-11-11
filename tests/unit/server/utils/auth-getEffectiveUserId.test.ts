@@ -131,4 +131,58 @@ describe('getEffectiveUserId deactivated account rejection', () => {
 
     await expect(getEffectiveUserId(event as any)).resolves.toBe('user-1')
   })
+  const bearerEvent = () =>
+    ({
+      node: {
+        req: {
+          headers: { authorization: 'Bearer audience-token' },
+          socket: { remoteAddress: '127.0.0.1' }
+        }
+      }
+    }) as any
+  const activeToken = {
+    id: 'token-audience',
+    user: { id: 'user-1', deactivatedAt: null },
+    accessTokenExpiresAt: new Date(Date.now() + 60_000),
+    scopes: ['workout:read']
+  }
+
+  it.each(['https://app.coachwatts.com/mcp', 'https://other.example/api', ' '])(
+    'rejects bound audience %j before usage tracking',
+    async (resource) => {
+      const { getEffectiveUserId } = await import('../../../../server/utils/coaching')
+      getAccessToken.mockResolvedValue({ ...activeToken, resource })
+      await expect(getEffectiveUserId(bearerEvent())).rejects.toMatchObject({ statusCode: 401 })
+      expect(oAuthTokenUpdate).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([null, undefined, ''])('accepts legacy resource %j', async (resource) => {
+    const { getEffectiveUserId } = await import('../../../../server/utils/coaching')
+    getAccessToken.mockResolvedValue({ ...activeToken, resource })
+    await expect(getEffectiveUserId(bearerEvent())).resolves.toBe('user-1')
+    expect(oAuthTokenUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([null, { ...activeToken, accessTokenExpiresAt: new Date(0) }])(
+    'rejects missing or expired token %j without tracking usage',
+    async (token) => {
+      const { getEffectiveUserId } = await import('../../../../server/utils/coaching')
+      getAccessToken.mockResolvedValue(token)
+      await expect(getEffectiveUserId(bearerEvent())).rejects.toMatchObject({ statusCode: 401 })
+      expect(oAuthTokenUpdate).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['session', 'api_key'])('prefers %s over a bound bearer', async (authType) => {
+    const { getEffectiveUserId } = await import('../../../../server/utils/coaching')
+    getAccessToken.mockResolvedValue({ ...activeToken, resource: 'https://app.coachwatts.com/mcp' })
+    if (authType === 'session') getServerSession.mockResolvedValue({ user: { id: 'session-user' } })
+    else validateApiKey.mockResolvedValue({ id: 'key-user' })
+    await expect(getEffectiveUserId(bearerEvent())).resolves.toBe(
+      authType === 'session' ? 'session-user' : 'key-user'
+    )
+    expect(getAccessToken).not.toHaveBeenCalled()
+    expect(oAuthTokenUpdate).not.toHaveBeenCalled()
+  })
 })

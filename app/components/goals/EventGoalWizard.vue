@@ -729,11 +729,11 @@
         form.description = primaryEvent.description || ''
         form.eventId = primaryEvent.id // Keep for compat
 
-        if (primaryEvent.distance) form.distance = primaryEvent.distance
-        if (primaryEvent.elevation) form.elevation = primaryEvent.elevation
-        if (primaryEvent.expectedDuration) form.expectedDuration = primaryEvent.expectedDuration
-        if (primaryEvent.type) form.eventType = primaryEvent.type
-        if (primaryEvent.terrain) form.terrain = primaryEvent.terrain
+        form.distance = primaryEvent.distance ?? undefined
+        form.elevation = primaryEvent.elevation ?? undefined
+        form.expectedDuration = primaryEvent.expectedDuration ?? undefined
+        form.eventType = primaryEvent.type ?? 'Road Race'
+        form.terrain = primaryEvent.terrain ?? 'Rolling'
       }
     } else {
       // Reset if empty

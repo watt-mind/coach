@@ -43,6 +43,25 @@ interface RecommendationsResponse {
 
 type GenerateRecommendationsPayload = { userId: string }
 
+/**
+ * Safely extracts the executive summary from a ScoreTrendExplanation
+ * `analysisData` Json column (CW-640).
+ *
+ * Prisma `Json` columns accept JSON `null` and any non-object shape at the
+ * storage level, so a direct `(analysisData as any).executive_summary`
+ * read throws on `null` and renders `undefined`/coerced text otherwise.
+ * Only a non-array object carrying a non-empty string `executive_summary`
+ * is used; every other shape renders `N/A`. Read-only: never mutates the
+ * stored value.
+ */
+function trendSummary(analysisData: unknown): string {
+  if (analysisData && typeof analysisData === 'object' && !Array.isArray(analysisData)) {
+    const summary = (analysisData as { executive_summary?: unknown }).executive_summary
+    if (typeof summary === 'string' && summary.length > 0) return summary
+  }
+  return 'N/A'
+}
+
 export async function runGenerateRecommendations(payload: GenerateRecommendationsPayload) {
   // ... (previous setup code remains the same) ...
   const { userId } = payload
@@ -237,7 +256,7 @@ RECENT TRENDS (Score Explanations):
 ${trends
   .map(
     (t) =>
-      `- [${t.type.toUpperCase()} - ${t.metric} (${t.period}d)] Score: ${t.score?.toFixed(1)}/10. Summary: ${(t.analysisData as any).executive_summary}`
+      `- [${t.type.toUpperCase()} - ${t.metric} (${t.period}d)] Score: ${t.score?.toFixed(1)}/10. Summary: ${trendSummary(t.analysisData)}`
   )
   .join('\n')}
 

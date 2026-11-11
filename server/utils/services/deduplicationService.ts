@@ -376,6 +376,8 @@ export const deduplicationService = {
   async mergeDuplicateGroup(group: DuplicateGroup): Promise<MergeDuplicateGroupResult> {
     if (group.toDelete.length === 0) return { deletedCount: 0, keptCount: 1 }
 
+    // V1-by-design: this relation identifies only a legacy-table donor.
+    // V2 donors are selected independently inside the transaction below (CW-643).
     const duplicatesToDelete = await prisma.workout.findMany({
       where: { id: { in: group.toDelete } },
       select: { id: true, plannedWorkoutId: true, streams: { select: { id: true } } }
@@ -527,6 +529,24 @@ export const deduplicationService = {
             )
             await tx.workoutStream.update({
               where: { workoutId: donorWithStreams.id },
+              data: { workoutId: bestWorkout.id }
+            })
+          }
+        }
+
+        // V2 streams are independent of legacy streams and may exist alone.
+        const existingBestStreamV2 = await tx.workoutStreamV2.findUnique({
+          where: { workoutId: bestWorkout.id },
+          select: { id: true }
+        })
+        if (!existingBestStreamV2) {
+          const donorV2 = await tx.workoutStreamV2.findFirst({
+            where: { workoutId: { in: group.toDelete } },
+            select: { id: true }
+          })
+          if (donorV2) {
+            await tx.workoutStreamV2.update({
+              where: { id: donorV2.id },
               data: { workoutId: bestWorkout.id }
             })
           }

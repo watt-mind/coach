@@ -55,10 +55,40 @@ const REALTIME_CHANNEL = CHANNEL_NAMESPACE
   : REALTIME_CHANNEL_BASE
 
 let publisher: IORedis | null = null
+let publisherRetryAt = 0
+let publisherRetryDelay = 250
 let subscriber: IORedis | null = null
 let subscriberHandler: ((channel: string, payload: string) => void) | null = null
 let subscriptionPromise: Promise<void> | null = null
 let hasLoggedDisabled = false
+let recoveryTimer: ReturnType<typeof setTimeout> | null = null
+let recoveryDelay = 250
+let generation = 0
+let eventHandler: ((event: { userId: string; data: any }) => void) | null = null
+
+const clientCleanup = new WeakMap<IORedis, Array<() => void>>()
+
+function ownListener(client: IORedis, event: string, listener: (...args: any[]) => void) {
+  client.on(event, listener)
+  clientCleanup.get(client)!.push(() => client.off(event, listener))
+}
+
+function dispose(client: IORedis) {
+  for (const cleanup of clientCleanup.get(client) || []) cleanup()
+  clientCleanup.delete(client)
+  // ioredis owns ready/close listeners that settle its pending connect promise.
+  client.disconnect()
+}
+
+function scheduleRecovery() {
+  if (!eventHandler || recoveryTimer) return
+  recoveryTimer = setTimeout(() => {
+    recoveryTimer = null
+    if (eventHandler) void startRealtimeSubscription(eventHandler)
+  }, recoveryDelay)
+  recoveryTimer.unref?.()
+  recoveryDelay = Math.min(recoveryDelay * 2, 10000)
+}
 
 export function isRealtimeBusEnabled() {
   return !!REDIS_URL && !process.env.NITRO_BUILD
@@ -77,12 +107,14 @@ function createRedisClient(name: string) {
 
   const client = new IORedis(REDIS_URL, {
     lazyConnect: true,
+    connectTimeout: 2000,
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
     retryStrategy: () => null
   })
 
-  client.on('error', (error) => {
+  clientCleanup.set(client, [])
+  ownListener(client, 'error', (error) => {
     logRealtimeEvent('bus', `${name}_redis_error`, {
       message: error.message
     })
@@ -103,12 +135,27 @@ async function ensureConnected(client: IORedis) {
 }
 
 async function getPublisher() {
+  if (Date.now() < publisherRetryAt) throw new Error('Realtime publisher cooling down')
+  if (publisher?.status === 'end') {
+    dispose(publisher)
+    publisher = null
+  }
   if (!publisher) {
     publisher = createRedisClient('publisher')
   }
 
-  await ensureConnected(publisher)
-  return publisher
+  const client = publisher
+  try {
+    await ensureConnected(client)
+    if (client.status !== 'ready') throw new Error('Realtime publisher unavailable')
+    publisherRetryAt = 0
+    publisherRetryDelay = 250
+    return client
+  } catch (error) {
+    publisherRetryAt = Date.now() + publisherRetryDelay
+    publisherRetryDelay = Math.min(publisherRetryDelay * 2, 10000)
+    throw error
+  }
 }
 
 async function getSubscriber() {
@@ -161,12 +208,32 @@ export async function startRealtimeSubscription(
     return
   }
 
+  if (!eventHandler) eventHandler = onEvent
+  if (recoveryTimer) return
   if (subscriptionPromise) {
     return subscriptionPromise
   }
 
+  const attemptGeneration = generation
+  let attemptClient: IORedis | null = null
   subscriptionPromise = (async () => {
-    const client = await getSubscriber()
+    const pending = getSubscriber()
+    const client = subscriber!
+    attemptClient = client
+    const recover = () => {
+      if (generation !== attemptGeneration || subscriber !== client) return
+      dispose(client)
+      subscriber = null
+      subscriberHandler = null
+      subscriptionPromise = null
+      scheduleRecovery()
+    }
+    const cancelled = new Promise<void>((resolve) => {
+      clientCleanup.get(client)!.push(resolve)
+    })
+    ownListener(client, 'end', recover)
+    await Promise.race([pending, cancelled])
+    if (generation !== attemptGeneration || subscriber !== client) return
 
     if (!subscriberHandler) {
       subscriberHandler = (channel: string, payload: string) => {
@@ -187,7 +254,7 @@ export async function startRealtimeSubscription(
             runId: envelope.data?.runId
           })
 
-          onEvent({
+          eventHandler?.({
             userId: envelope.userId,
             data: envelope.data
           })
@@ -196,12 +263,18 @@ export async function startRealtimeSubscription(
         }
       }
 
-      client.on('message', subscriberHandler)
+      ownListener(client, 'message', subscriberHandler)
     }
 
-    await client.subscribe(REALTIME_CHANNEL)
+    await Promise.race([client.subscribe(REALTIME_CHANNEL), cancelled])
+    if (generation === attemptGeneration && subscriber === client) recoveryDelay = 250
   })().catch((error) => {
+    if (generation !== attemptGeneration || subscriber !== attemptClient) return
+    if (subscriber) dispose(subscriber)
+    subscriber = null
+    subscriberHandler = null
     subscriptionPromise = null
+    scheduleRecovery()
     logRealtimeEvent('bus', 'subscribe_failed', {
       message: error instanceof Error ? error.message : String(error)
     })
@@ -211,22 +284,18 @@ export async function startRealtimeSubscription(
 }
 
 export async function stopRealtimeSubscription() {
-  try {
-    if (subscriber) {
-      if (subscriberHandler) {
-        subscriber.off('message', subscriberHandler)
-        subscriberHandler = null
-      }
-      await subscriber.unsubscribe(REALTIME_CHANNEL).catch(() => null)
-      await subscriber.quit().catch(() => subscriber?.disconnect())
-      subscriber = null
-    }
-
-    if (publisher) {
-      await publisher.quit().catch(() => publisher?.disconnect())
-      publisher = null
-    }
-  } finally {
-    subscriptionPromise = null
-  }
+  generation++
+  publisherRetryAt = 0
+  publisherRetryDelay = 250
+  eventHandler = null
+  if (recoveryTimer) clearTimeout(recoveryTimer)
+  recoveryTimer = null
+  recoveryDelay = 250
+  subscriptionPromise = null
+  subscriberHandler = null
+  // Disconnect immediately: quit/unsubscribe can wait for an unavailable Redis.
+  if (subscriber) dispose(subscriber)
+  if (publisher) dispose(publisher)
+  subscriber = null
+  publisher = null
 }

@@ -28,8 +28,19 @@ on:
 # Per-PR only: a new push supersedes that PR's in-flight run. Runs for
 # different PRs (and manual dispatches) execute in parallel — the stack is
 # parallel-safe via per-run compose project names and ports (CW-666).
+#
+# A `labeled` event for any label other than run-e2e / run-lighthouse gets its
+# own throwaway group: previously adding e.g. `dependencies` to a master PR
+# cancelled its in-flight E2E + Lighthouse run and restarted it from scratch.
 concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.run_id }}
+  group: >-
+    e2e-${{
+      (github.event.action == 'labeled' &&
+       github.event.label.name != 'run-e2e' &&
+       github.event.label.name != 'run-lighthouse')
+      && format('ignored-label-{0}', github.run_id)
+      || github.event.pull_request.number || github.run_id
+    }}
   cancel-in-progress: true
 
 permissions:
@@ -44,10 +55,13 @@ jobs:
     runs-on: [self-hosted, e2e]
     timeout-minutes: 120
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      github.base_ref == 'master' ||
-      contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
-      contains(github.event.pull_request.labels.*.name, 'run-lighthouse')
+      (github.event.action != 'labeled' ||
+       github.event.label.name == 'run-e2e' ||
+       github.event.label.name == 'run-lighthouse') &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.base_ref == 'master' ||
+       contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
+       contains(github.event.pull_request.labels.*.name, 'run-lighthouse'))
 
     env:
       DOCKER_BUILDKIT: '1'
@@ -60,21 +74,10 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - name: Setup Node + pnpm
+        uses: ./.github/actions/setup-node-pnpm
         with:
-          dest: ${{ runner.temp }}/setup-pnpm
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: '.nvmrc'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare Nuxt
-        run: pnpm exec nuxt prepare
+          nuxt-prepare: 'true'
 
       # Per-run compose project + host ports so concurrent runs on one Docker
       # daemon never collide (CW-666). Ports land in .env.e2e because Playwright
@@ -111,9 +114,8 @@ jobs:
       - name: Pre-clean this run's stack
         run: pnpm e2e:down || true
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-
+      # No setup-buildx here: e2e-setup.sh builds on the daemon's default BuildKit
+      # builder so layer + pnpm caches persist on this host between runs.
       - name: Build and start Docker e2e stack
         run: pnpm e2e:setup
 
@@ -149,9 +151,21 @@ jobs:
           contains(github.event.pull_request.labels.*.name, 'run-lighthouse')
         # E2E_BASE_URL comes from the per-run env (GITHUB_ENV) set in
         # "Prepare e2e env" — lighthouserc.cjs reads it from process env.
-        run: pnpm e2e:lighthouse
+        #
+        # Call lhci directly, not `pnpm e2e:lighthouse`: that script is
+        # `gtimeout 180s lhci autorun || timeout 180s lhci autorun || lhci autorun`.
+        # 22 URLs x 2 runs never fit in 180s on Linux, so CI always timed out
+        # and then re-ran the whole audit from scratch (~17 min per run), and an
+        # assertion failure was likewise retried in full. The step timeout below
+        # is the only bound we need.
+        #
+        # PR runs audit the core page set once per URL; manual dispatches run
+        # the full 22-URL x 2-run audit (LHCI_FULL, see lighthouserc.cjs).
+        timeout-minutes: 25
+        run: pnpm exec lhci autorun
         env:
           CI: true
+          LHCI_FULL: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
 
       - name: Upload Playwright report
         if: always() && !inputs.lighthouse_only
@@ -170,6 +184,9 @@ jobs:
         with:
           name: lighthouserc-report-${{ github.run_id }}
           path: .lighthouseci/
+          # upload-artifact v4+ skips dot-paths by default, so this step has
+          # been logging "No files were found" and never uploaded the reports.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 

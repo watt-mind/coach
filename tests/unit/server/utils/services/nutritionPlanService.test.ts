@@ -185,6 +185,116 @@ describe('nutritionPlanService', () => {
       ] as any)
     }
 
+    it.each<[number, number, string | undefined, number]>([
+      [25, 75, undefined, 100],
+      [0, 0, undefined, 100],
+      [25, 75, 'SKIPPED', 75],
+      [25, 75, 'REPLACED', 75]
+    ])(
+      'aggregates persisted splits (%s:%s, excluded %s) exactly once',
+      async (first, second, status, expected) => {
+        vi.mocked(getUserTimezone).mockResolvedValue('UTC')
+        vi.mocked(prisma.nutritionPlan.findFirst).mockResolvedValue({ id: 'plan-1' } as any)
+        vi.mocked(prisma.nutrition.findUnique).mockResolvedValue(null)
+        const rows: any[] = []
+        vi.mocked(prisma.nutritionPlanMeal.upsert).mockImplementation((async (args: any) => {
+          const row = JSON.parse(JSON.stringify({ id: `meal-${rows.length}`, ...args.create }))
+          row.date = new Date(row.date)
+          rows.push(row)
+          return row
+        }) as any)
+        const ingredients = [{ item: 'Oats', quantity: 100, unit: 'g' }]
+        const totals = { carbs: 61, protein: 13, kcal: 389, fat: 7 }
+        await nutritionPlanService.lockMeal(
+          'user-1',
+          '2026-02-15',
+          'PRE_WORKOUT',
+          {
+            title: 'Porridge',
+            ingredients,
+            totals
+          },
+          undefined,
+          {
+            windowAssignments: [
+              { windowType: 'PRE_WORKOUT', windowKey: 'PRE_WORKOUT#1', targetCarbs: first },
+              { windowType: 'PRE_WORKOUT', windowKey: 'PRE_WORKOUT#2', targetCarbs: second }
+            ]
+          }
+        )
+        expect(rows).toHaveLength(2)
+        expect(rows.map((row) => row.mealJson.ingredients)).toEqual([ingredients, ingredients])
+        expect(rows.map((row) => row.mealJson.allocation.ratio)).toEqual(
+          first ? [0.25, 0.75] : [0.5, 0.5]
+        )
+        for (const [macro, total] of Object.entries(totals)) {
+          expect(rows.reduce((sum, row) => sum + row.mealJson.totals[macro], 0)).toBe(total)
+        }
+        if (status) rows[0].status = status
+        mockPlan(rows)
+        const result = await nutritionPlanService.getGroceryList(
+          'user-1',
+          new Date('2026-02-15'),
+          new Date('2026-02-15T23:59:59.999Z')
+        )
+        expect(result.items[0]?.quantity).toBe(expected)
+        expect(result.totals).toEqual({ ingredients: 1, meals: status ? 1 : 2 })
+        expect(result.items[0]?.sourceMeals).toEqual(
+          Array.from({ length: status ? 1 : 2 }, () => ({ date: '2026-02-15', title: 'Porridge' }))
+        )
+        expect(rows.map((row) => row.mealJson.ingredients)).toEqual([ingredients, ingredients])
+      }
+    )
+
+    it('keeps independently locked identical selections at full quantity', async () => {
+      vi.mocked(getUserTimezone).mockResolvedValue('UTC')
+      vi.mocked(prisma.nutritionPlan.findFirst).mockResolvedValue({ id: 'plan-1' } as any)
+      vi.mocked(prisma.nutrition.findUnique).mockResolvedValue(null)
+      const rows: any[] = []
+      vi.mocked(prisma.nutritionPlanMeal.upsert).mockImplementation((async (args: any) => {
+        const row = { id: `meal-${rows.length}`, ...args.create }
+        rows.push(row)
+        return row
+      }) as any)
+      for (const windowKey of ['PRE_WORKOUT#1', 'PRE_WORKOUT#2']) {
+        await nutritionPlanService.lockMeal(
+          'user-1',
+          '2026-02-15',
+          'PRE_WORKOUT',
+          {
+            title: 'Porridge',
+            ingredients: [{ item: 'Oats', quantity: 100, unit: 'g' }],
+            totals: { carbs: 60 }
+          },
+          undefined,
+          { windowKey }
+        )
+      }
+      mockPlan(rows)
+      const result = await nutritionPlanService.getGroceryList(
+        'user-1',
+        new Date('2026-02-15'),
+        new Date('2026-02-15T23:59:59.999Z')
+      )
+      expect(result.items[0]?.quantity).toBe(200)
+      expect(result.totals.meals).toBe(2)
+    })
+
+    it.each([undefined, null, NaN, Infinity, -1, 2, '0.5', 0, 0.25])(
+      'handles persisted allocation ratio %s without poisoning quantities',
+      async (ratio) => {
+        const row = mealWith([{ item: ' Oats ', quantity: '100', unit: 'g' }])
+        Object.assign(row.mealJson, { allocation: { ratio } })
+        mockPlan([row])
+        const result = await nutritionPlanService.getGroceryList(
+          'user-1',
+          new Date('2026-02-15'),
+          new Date('2026-02-15T23:59:59.999Z')
+        )
+        expect(result.items[0]?.quantity).toBe(ratio === 0 ? 0 : ratio === 0.25 ? 25 : 100)
+      }
+    )
+
     it('sums quantities of the same ingredient and unit', async () => {
       mockPlan([
         mealWith([{ item: 'Oats', quantity: 80, unit: 'g' }], 'meal-1', 'DAILY_BASE:breakfast'),

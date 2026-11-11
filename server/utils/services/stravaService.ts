@@ -1,4 +1,6 @@
 import { prisma } from '../db'
+import { deduplicationService } from './deduplicationService'
+import { attachStreamsToWorkouts } from '../repositories/workoutStreamRepository'
 import { shouldIngestActivities } from '../integration-settings'
 import { dispatchTask } from '../task-dispatcher'
 import { registerTaskHandler } from '../task-registry'
@@ -280,23 +282,59 @@ export async function processStravaWebhookEvent(userId: string, type: string, pa
       )
       return { handled: true, message: `Triggered ingestion for activity ${object_id}` }
     } else if (aspect_type === 'delete') {
-      const workout = await prisma.workout.findUnique({
-        where: {
-          userId_source_externalId: {
-            userId,
-            source: 'strava',
-            externalId: object_id.toString()
+      return prisma.$transaction(async (tx) => {
+        const workout = await tx.workout.findUnique({
+          where: {
+            userId_source_externalId: {
+              userId,
+              source: 'strava',
+              externalId: object_id.toString()
+            }
+          }
+        })
+
+        if (!workout) {
+          return { handled: true, message: `Workout ${object_id} not found in DB` }
+        }
+
+        if (!workout.isDuplicate) {
+          const duplicates = await tx.workout.findMany({
+            where: { userId, duplicateOf: workout.id },
+            include: { exercises: true }
+          })
+          const hydrated = duplicates.length
+            ? await attachStreamsToWorkouts(duplicates, { fields: [] })
+            : []
+          const ranked = hydrated
+            .map((copy) => ({
+              ...copy,
+              score: deduplicationService.calculateCompletenessScore(copy)
+            }))
+            .sort((a, b) => b.score - a.score)
+          const survivor = ranked[0]
+
+          if (survivor) {
+            await tx.workout.update({
+              where: { id: survivor.id, userId },
+              data: {
+                isDuplicate: false,
+                duplicateOf: null,
+                plannedWorkoutId: survivor.plannedWorkoutId || workout.plannedWorkoutId
+              }
+            })
+            await tx.workout.updateMany({
+              where: {
+                userId,
+                id: { in: ranked.slice(1).map((copy) => copy.id) }
+              },
+              data: { isDuplicate: true, duplicateOf: survivor.id }
+            })
           }
         }
-      })
 
-      if (workout) {
-        await prisma.workout.delete({
-          where: { id: workout.id }
-        })
+        await tx.workout.delete({ where: { id: workout.id, userId } })
         return { handled: true, message: `Deleted workout ${workout.id}` }
-      }
-      return { handled: true, message: `Workout ${object_id} not found in DB` }
+      })
     }
   } else if (object_type === 'athlete') {
     if (updates && updates.authorized === 'false') {

@@ -31,6 +31,7 @@ type JsonSchemaNode = {
   type?: string
   enum?: unknown[]
   maxLength?: number
+  required?: string[]
   description?: string
   properties?: Record<string, JsonSchemaNode>
   items?: JsonSchemaNode
@@ -144,6 +145,102 @@ describe('athleteProfileSchema — declared free-text length intent (CW-368)', (
       'hr_power_alignment_explanation'
     ]) {
       expect(at(`athlete_scores/${field}`).maxLength, field).toBe(800)
+    }
+  })
+})
+
+describe('athleteProfileSchema — explanation JSON factory (CW-653)', () => {
+  const fitnessBlock = 'athlete_scores/current_fitness_explanation_json'
+  const recoveryBlock = 'athlete_scores/recovery_capacity_explanation_json'
+
+  it('preserves the exact subject wording on each block root', () => {
+    expect(at(fitnessBlock).description).toBe('Structured explanation of current fitness')
+    expect(at(recoveryBlock).description).toBe('Structured explanation of recovery capacity')
+  })
+
+  it('preserves the exact per-field descriptions in both blocks', () => {
+    for (const block of [fitnessBlock, recoveryBlock]) {
+      expect(at(`${block}/executive_summary`).description).toBe(
+        '2-3 sentence overview (max 500 characters)'
+      )
+      expect(at(`${block}/sections/[]/analysis_points`).description).toBe(
+        'Analysis points, each 1-2 sentences (max 400 characters per item)'
+      )
+      expect(at(`${block}/recommendations/[]/title`).description).toBe(
+        'Short recommendation label of a few words — a heading, not a sentence or a paragraph (max 80 characters)'
+      )
+      expect(at(`${block}/recommendations/[]/description`).description).toBe(
+        '1-3 sentences describing the recommendation (max 500 characters)'
+      )
+    }
+
+    expect(at(`${fitnessBlock}/sections/[]/title`).description).toBe(
+      'Short section label of a few words, e.g. "Aerobic Base" — a heading, not a sentence or a paragraph (max 80 characters)'
+    )
+    expect(at(`${recoveryBlock}/sections/[]/title`).description).toBe(
+      'Short section label of a few words, e.g. "Sleep Consistency" — a heading, not a sentence or a paragraph (max 80 characters)'
+    )
+  })
+
+  it('keeps both blocks structurally identical apart from subject and title example', () => {
+    const fitness = at(fitnessBlock)
+    const recovery = at(recoveryBlock)
+
+    expect(Object.keys(fitness.properties ?? {}).sort()).toEqual(
+      Object.keys(recovery.properties ?? {}).sort()
+    )
+    expect(fitness.required).toEqual(['executive_summary', 'sections', 'recommendations'])
+    expect(recovery.required).toEqual(['executive_summary', 'sections', 'recommendations'])
+
+    // Enum order is part of the generated schema value.
+    for (const block of [fitnessBlock, recoveryBlock]) {
+      expect(at(`${block}/sections/[]/status`).enum).toEqual([
+        'excellent',
+        'good',
+        'moderate',
+        'needs_improvement'
+      ])
+      expect(at(`${block}/recommendations/[]/priority`).enum).toEqual(['high', 'medium', 'low'])
+    }
+
+    // Normalizing only the two known wording differences must yield
+    // deeply equal structures.
+    const normalize = (node: unknown) =>
+      JSON.parse(
+        JSON.stringify(node, (_key, value: unknown) =>
+          typeof value === 'string'
+            ? value
+                .replace(
+                  'Structured explanation of current fitness',
+                  'Structured explanation of SUBJECT'
+                )
+                .replace(
+                  'Structured explanation of recovery capacity',
+                  'Structured explanation of SUBJECT'
+                )
+                .replace('"Aerobic Base"', '"TITLE_EXAMPLE"')
+                .replace('"Sleep Consistency"', '"TITLE_EXAMPLE"')
+            : value
+        )
+      )
+    expect(normalize(fitness)).toEqual(normalize(recovery))
+  })
+
+  it('builds each block from fresh nested objects with no shared references', () => {
+    const subpaths = [
+      '',
+      '/executive_summary',
+      '/sections',
+      '/sections/[]',
+      '/sections/[]/title',
+      '/sections/[]/status',
+      '/recommendations',
+      '/recommendations/[]'
+    ]
+    for (const sub of subpaths) {
+      expect(at(`${fitnessBlock}${sub}`), `${sub || '(root)'}`).not.toBe(
+        at(`${recoveryBlock}${sub}`)
+      )
     }
   })
 })

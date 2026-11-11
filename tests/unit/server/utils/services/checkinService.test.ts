@@ -91,3 +91,85 @@ describe('Daily Check-in Service', () => {
     expect(historyStr).toContain('User Notes: "Feeling fresh today"')
   })
 })
+
+vi.mock('../../../../../server/utils/db', () => ({
+  prisma: {
+    plannedWorkout: { findFirst: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
+    user: { findUnique: vi.fn() },
+    report: { findFirst: vi.fn() },
+    goal: { findMany: vi.fn().mockResolvedValue([]) },
+    trainingPlan: { findFirst: vi.fn() },
+    event: { findMany: vi.fn().mockResolvedValue([]) },
+    calendarNote: { findMany: vi.fn().mockResolvedValue([]) },
+    athleteJourneyEvent: { findMany: vi.fn().mockResolvedValue([]) },
+    dailyCheckin: { findUnique: vi.fn().mockResolvedValue({ id: 'checkin' }) },
+    workoutStreamV2: { findMany: vi.fn().mockResolvedValue([]) },
+    workoutStream: { findMany: vi.fn().mockResolvedValue([]) }
+  }
+}))
+vi.mock('../../../../../server/utils/repositories/workoutRepository', () => ({
+  workoutRepository: { getForUser: vi.fn().mockResolvedValue([]) }
+}))
+vi.mock('../../../../../server/utils/repositories/wellnessRepository', () => ({
+  wellnessRepository: { getByDate: vi.fn() }
+}))
+vi.mock('../../../../../server/utils/ai-user-settings', () => ({
+  getUserAiSettings: vi.fn().mockResolvedValue({})
+}))
+vi.mock('../../../../../server/utils/training-stress', () => ({
+  getCurrentFitnessSummary: vi.fn().mockResolvedValue({ ctl: 0, atl: 0 }),
+  calculateProjectedPMC: vi.fn().mockReturnValue([])
+}))
+vi.mock('../../../../../server/utils/gemini', () => ({
+  generateStructuredAnalysis: vi.fn().mockResolvedValue({ questions: [] }),
+  buildWorkoutSummary: vi.fn()
+}))
+
+describe('check-in stream context', () => {
+  it.each(['v2', 'v1', 'absent'])('reads baseline zone context from %s', async (storage) => {
+    vi.clearAllMocks()
+    const { prisma } = await import('../../../../../server/utils/db')
+    const { workoutRepository } =
+      await import('../../../../../server/utils/repositories/workoutRepository')
+    const { getUserAiSettings } = await import('../../../../../server/utils/ai-user-settings')
+    const { getCurrentFitnessSummary, calculateProjectedPMC } =
+      await import('../../../../../server/utils/training-stress')
+    vi.mocked(getUserAiSettings).mockResolvedValue({} as any)
+    vi.mocked(getCurrentFitnessSummary).mockResolvedValue({ ctl: 0, atl: 0 } as any)
+    vi.mocked(calculateProjectedPMC).mockReturnValue([])
+    for (const model of ['goal', 'event', 'calendarNote', 'athleteJourneyEvent'] as const) {
+      vi.mocked(prisma[model].findMany).mockResolvedValue([])
+    }
+    vi.mocked(prisma.plannedWorkout.findMany).mockResolvedValue([])
+    vi.mocked(dailyCheckinRepository.getHistory).mockResolvedValue([])
+    vi.mocked(workoutRepository.getForUser).mockResolvedValue([
+      { id: 'ride', date: new Date() }
+    ] as any)
+    const rows = [{ workoutId: 'ride', hrZoneTimes: [100], powerZoneTimes: [200] }]
+    vi.mocked(prisma.workoutStreamV2.findMany).mockResolvedValue(
+      storage === 'v2' ? (rows as any) : []
+    )
+    vi.mocked(prisma.workoutStream.findMany).mockResolvedValue(
+      storage === 'v1' ? (rows as any) : []
+    )
+    const { generateStructuredAnalysis } = await import('../../../../../server/utils/gemini')
+    vi.mocked(generateStructuredAnalysis).mockResolvedValue({ questions: [] } as any)
+    vi.mocked(prisma.dailyCheckin.findUnique).mockResolvedValue({ id: 'checkin' } as any)
+    const result = await runGenerateDailyCheckin({
+      userId: 'user',
+      checkinId: 'checkin',
+      source: 'auto',
+      date: new Date('2026-03-15')
+    })
+    expect(result.success).toBe(true)
+    expect(prisma.workoutStreamV2.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workoutId: { in: ['ride'] } },
+        select: expect.objectContaining({ hrZoneTimes: true, powerZoneTimes: true })
+      })
+    )
+    const query = vi.mocked(prisma.workoutStreamV2.findMany).mock.calls[0]?.[0] as any
+    expect(query.select).not.toHaveProperty('cadence')
+    if (storage !== 'v2') expect(prisma.workoutStream.findMany).toHaveBeenCalled()
+  })
+})

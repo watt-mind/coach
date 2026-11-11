@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import { oauthRepository } from '../../utils/repositories/oauthRepository'
 import { normalizeResourceUrl } from '../../utils/oauth/resource'
 
@@ -85,10 +84,9 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    const includeRefreshToken =
-      authCode.scopes.includes('offline_access') || (!isMcpCode && authCode.scopes.length >= 0)
+    const includeRefreshToken = authCode.scopes.includes('offline_access')
 
-    const token = await oauthRepository.createToken({
+    const token = await oauthRepository.redeemAuthCode(code, {
       appId: app.id,
       userId: authCode.userId,
       scopes: authCode.scopes,
@@ -96,9 +94,11 @@ export default defineEventHandler(async (event) => {
       includeRefreshToken
     })
 
-    await oauthRepository.deleteAuthCode(code)
+    if (!token) {
+      return sendOAuthError(event, 'invalid_grant', 'Invalid or expired authorization code')
+    }
 
-    return serializeTokenResponse(token)
+    return serializeTokenResponse(token, includeRefreshToken)
   }
 
   if (grant_type === 'refresh_token') {
@@ -145,13 +145,16 @@ function sendOAuthError(event: any, error: string, description: string) {
   }
 }
 
-function serializeTokenResponse(token: {
-  accessToken: string
-  refreshToken: string | null
-  refreshTokenExpiresAt: Date | null
-  scopes: string[]
-  resource?: string | null
-}) {
+function serializeTokenResponse(
+  token: {
+    accessToken: string
+    refreshToken: string | null
+    refreshTokenExpiresAt: Date | null
+    scopes: string[]
+    resource?: string | null
+  },
+  includeRefreshToken = true
+) {
   const response: Record<string, unknown> = {
     access_token: token.accessToken,
     token_type: 'Bearer',
@@ -159,11 +162,11 @@ function serializeTokenResponse(token: {
     scope: token.scopes.join(' ')
   }
 
-  if (token.refreshToken) {
+  if (includeRefreshToken && token.refreshToken) {
     response.refresh_token = token.refreshToken
   }
 
-  if (token.refreshTokenExpiresAt) {
+  if (includeRefreshToken && token.refreshTokenExpiresAt) {
     response.refresh_token_expires_in = Math.max(
       0,
       Math.floor((token.refreshTokenExpiresAt.getTime() - Date.now()) / 1000)

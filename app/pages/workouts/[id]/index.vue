@@ -3732,7 +3732,7 @@
   import StreamChartModal from '~/components/charts/streams/StreamChartModal.vue'
   import { getWorkoutSourceLabel } from '~/utils/workout-source'
   import { metricTooltips } from '~/utils/tooltips'
-  import { getAnalysisStatusColor } from '~/utils/analysis-status'
+  import { getAnalysisStatusClass } from '~/utils/analysis-status'
   import {
     convertElevation,
     formatDistance as formatDist,
@@ -5817,29 +5817,7 @@
     return true
   }
 
-  /**
-   * HUD pill styling for an AI analysis section status. The severity decision itself
-   * lives in `~/utils/analysis-status` so this page, the report page, the share page
-   * and the score modal cannot disagree about it again (CW-424); only the pill's
-   * look is local.
-   */
-  function getStatusPillClass(status?: string | null) {
-    // Each branch carries an explicit light value: the pill text is 8px, and the
-    // bright HUD tones these dark-mode values use (the brand `#00DC82` in
-    // particular) drop under 2:1 against the light card background.
-    switch (getAnalysisStatusColor(status)) {
-      case 'success':
-        return 'border-emerald-600/30 dark:border-[#00DC82]/30 text-emerald-700 dark:text-[#00DC82] bg-emerald-500/10 dark:bg-[#00DC82]/5'
-      case 'warning':
-        return 'border-amber-600/30 dark:border-amber-500/30 text-amber-700 dark:text-amber-400 bg-amber-500/10 dark:bg-amber-500/5'
-      case 'error':
-        return 'border-red-600/30 dark:border-red-500/30 text-red-700 dark:text-red-400 bg-red-500/10 dark:bg-red-500/5'
-      case 'info':
-        return 'border-blue-600/30 dark:border-blue-500/30 text-blue-700 dark:text-blue-400 bg-blue-500/10 dark:bg-blue-500/5'
-      default:
-        return 'border-zinc-500/30 dark:border-zinc-400/30 text-zinc-600 dark:text-zinc-400 bg-zinc-500/10 dark:bg-zinc-500/5'
-    }
-  }
+  const getStatusPillClass = (status?: string | null) => getAnalysisStatusClass(status)
 
   function getPriorityBadgeClass(priority: string) {
     const baseClass = 'px-2 py-0.5 rounded text-xs font-medium'

@@ -17,6 +17,10 @@ function peerCanReceive(ctx: PeerContext, data: any): boolean {
   if (type.startsWith('chat_')) {
     return wsAuthHasScopes(ctx.scopes, ['chat:read'])
   }
+  // Match notification REST GET permissions on direct and bus delivery.
+  if (type === 'notification_new') {
+    return wsAuthHasScopes(ctx.scopes, ['profile:read'])
+  }
   return true
 }
 
