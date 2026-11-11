@@ -176,13 +176,11 @@ export default defineEventHandler(async (event) => {
 
     if (isHydrationItem) {
       const hydrationItem = normalizeFluidFields({
+        ...item,
+        mealType: undefined,
         id: crypto.randomUUID(),
         name: item.name || 'Water',
         water_ml: Math.round(Number(item.waterMl || 0)),
-        calories: 0,
-        protein: 0,
-        carbs: 0,
-        fat: 0,
         entryType: 'HYDRATION',
         logged_at: typeof normalizedLoggedAt === 'string' ? normalizedLoggedAt : undefined,
         source: 'ai'
