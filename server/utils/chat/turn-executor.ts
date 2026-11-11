@@ -748,6 +748,7 @@ export function getHardcodedChatProviderOptions(modelType: 'flash' | 'pro', mode
 export function shouldScheduleChatRoomSummary(input: {
   roomName?: string | null
   roomMetadata?: Record<string, any> | null
+  newMessages?: { content: string | null }[]
 }) {
   const roomName = input.roomName?.trim()
   const roomMetadata = input.roomMetadata || {}
@@ -757,7 +758,19 @@ export function shouldScheduleChatRoomSummary(input: {
   const needsSummaryGeneration =
     !roomMetadata.historySummary || !roomMetadata.lastSummarizedMessageId
 
-  return needsTitleGeneration || needsSummaryGeneration
+  const newMessages = input.newMessages || []
+  const estimatedNewTokens = newMessages.reduce(
+    (sum, message) =>
+      sum + (typeof message.content === 'string' ? Math.ceil(message.content.length / 4) : 0),
+    0
+  )
+
+  return (
+    needsTitleGeneration ||
+    needsSummaryGeneration ||
+    newMessages.length >= 12 ||
+    estimatedNewTokens >= 1000
+  )
 }
 
 export async function scheduleChatRoomSummaryIfNeeded(input: {
@@ -767,7 +780,23 @@ export async function scheduleChatRoomSummaryIfNeeded(input: {
   roomMetadata?: Record<string, any> | null
 }) {
   if (!shouldScheduleChatRoomSummary(input)) {
-    return false
+    // Match summarize-chat's next incremental batch, rather than lifetime room size.
+    const cursor = await prisma.chatMessage.findUnique({
+      where: { id: input.roomMetadata!.lastSummarizedMessageId },
+      select: { createdAt: true }
+    })
+    const newMessages = await prisma.chatMessage.findMany({
+      where: {
+        roomId: input.roomId,
+        ...(cursor ? { createdAt: { gt: cursor.createdAt } } : {})
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+      select: { content: true }
+    })
+    if (!shouldScheduleChatRoomSummary({ ...input, newMessages })) {
+      return false
+    }
   }
 
   await dispatchTask('summarize-chat', {
