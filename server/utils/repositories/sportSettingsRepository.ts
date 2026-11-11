@@ -1,3 +1,4 @@
+import { createError } from 'h3'
 import { prisma as globalPrisma } from '../db'
 import { toPrismaInputJsonValue } from '../prisma-json'
 import { normalizeTargetPolicy, toLegacyLoadPreference } from '../workout-target-policy'
@@ -189,10 +190,13 @@ export const sportSettingsRepository = {
       if (setting.id) {
         const existing = await prisma.sportSettings.findUnique({ where: { id: setting.id } })
         if (existing) {
+          if (existing.userId !== userId) {
+            throw createError({ statusCode: 404, message: 'Sport settings not found' })
+          }
           const { targetPolicy, loadPreference, targetFormatPolicy } =
             resolveTargetPolicyAndLoadPreference(setting)
           const updated = await prisma.sportSettings.update({
-            where: { id: existing.id },
+            where: { id: existing.id, userId },
             data: {
               name: setting.name,
               types: setting.types,

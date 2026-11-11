@@ -74,6 +74,88 @@ describe('sportSettingsRepository', () => {
   })
 
   describe('upsertSettings', () => {
+    it.each([false, true])(
+      'rejects a foreign setting (default=%s) without any writes',
+      async (isDefault) => {
+        vi.mocked(prisma.sportSettings.findUnique).mockResolvedValue({
+          id: 'foreign-setting',
+          userId: 'other-athlete',
+          isDefault
+        } as any)
+        await expect(
+          sportSettingsRepository.upsertSettings(userId, [
+            {
+              id: 'foreign-setting',
+              ftp: 1,
+              source: 'manual',
+              externalId: 'fallback'
+            }
+          ])
+        ).rejects.toMatchObject({ statusCode: 404 })
+        expect(prisma.sportSettings.update).not.toHaveBeenCalled()
+        expect(prisma.sportSettings.upsert).not.toHaveBeenCalled()
+        expect(prisma.sportSettings.create).not.toHaveBeenCalled()
+        expect(prisma.user.update).not.toHaveBeenCalled()
+      }
+    )
+
+    it('scopes owned ID updates to the authenticated owner', async () => {
+      vi.mocked(prisma.sportSettings.findUnique).mockResolvedValue({
+        id: 'owned-setting',
+        userId,
+        isDefault: false
+      } as any)
+      vi.mocked(prisma.sportSettings.update).mockResolvedValue({
+        id: 'owned-setting',
+        userId,
+        isDefault: false,
+        ftp: 280
+      } as any)
+      const result = await sportSettingsRepository.upsertSettings(userId, [
+        { id: 'owned-setting', ftp: 280 }
+      ])
+      expect(prisma.sportSettings.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'owned-setting', userId }
+        })
+      )
+      expect(result[0]).toMatchObject({ id: 'owned-setting', ftp: 280 })
+    })
+
+    it('preserves fallback creation when the supplied ID does not exist', async () => {
+      vi.mocked(prisma.sportSettings.findUnique).mockResolvedValue(null)
+      vi.mocked(prisma.sportSettings.create).mockResolvedValue({
+        id: 'missing-setting',
+        userId,
+        isDefault: false
+      } as any)
+      await sportSettingsRepository.upsertSettings(userId, [
+        { id: 'missing-setting', types: ['Run'] }
+      ])
+      expect(prisma.sportSettings.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ id: 'missing-setting', userId, types: ['Run'] })
+        })
+      )
+    })
+
+    it('preserves the owner-scoped external ID upsert', async () => {
+      vi.mocked(prisma.sportSettings.upsert).mockResolvedValue({
+        id: 'imported-setting',
+        userId,
+        isDefault: false
+      } as any)
+      await sportSettingsRepository.upsertSettings(userId, [
+        { source: 'intervals', externalId: 'ride', ftp: 270 }
+      ])
+      expect(prisma.sportSettings.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId_source_externalId: { userId, source: 'intervals', externalId: 'ride' } },
+          create: expect.objectContaining({ userId, source: 'intervals', externalId: 'ride' })
+        })
+      )
+    })
+
     it('should sync Default profile updates back to legacy User fields', async () => {
       const settingsPayload = [
         {
@@ -88,6 +170,7 @@ describe('sportSettingsRepository', () => {
 
       vi.mocked(prisma.sportSettings.findUnique).mockResolvedValue({
         id: 's-default',
+        userId,
         isDefault: true
       } as any)
       vi.mocked(prisma.sportSettings.update).mockResolvedValue({
@@ -128,6 +211,7 @@ describe('sportSettingsRepository', () => {
 
       vi.mocked(prisma.sportSettings.findUnique).mockResolvedValue({
         id: 's-run',
+        userId,
         isDefault: false
       } as any)
       vi.mocked(prisma.sportSettings.update).mockResolvedValue({
@@ -158,6 +242,7 @@ describe('sportSettingsRepository', () => {
 
       vi.mocked(prisma.sportSettings.findUnique).mockResolvedValue({
         id: 's-ride',
+        userId,
         isDefault: false
       } as any)
       vi.mocked(prisma.sportSettings.update).mockResolvedValue({
