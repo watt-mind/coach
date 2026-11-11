@@ -722,14 +722,30 @@ export const IntervalsService = {
     const hrvData = (streams.hrv?.data as number[]) || null
     const leftRightBalanceData = (streams.left_right_balance?.data as number[]) || null
 
-    // Calculate Zones
-    const defaultProfile = await sportSettingsRepository.getDefault(userId)
+    // Calculate Zones: resolve activity-specific settings for the stored workout type.
+    // getForActivityType falls back to the default profile when no specific match
+    // exists; per-zone missing/empty arrays still fall back to user-level then built-in.
+    const storedWorkout = await prisma.workout.findUnique({
+      where: { id: workoutId },
+      select: { type: true }
+    })
+    const activityType =
+      typeof storedWorkout?.type === 'string' && storedWorkout.type.length > 0
+        ? storedWorkout.type
+        : null
+    const sportProfile = activityType
+      ? await sportSettingsRepository.getForActivityType(userId, activityType)
+      : await sportSettingsRepository.getDefault(userId)
     let hrZones: any[] = []
     let powerZones: any[] = []
 
-    if (defaultProfile) {
-      hrZones = (defaultProfile.hrZones as any[]) || []
-      powerZones = (defaultProfile.powerZones as any[]) || []
+    if (sportProfile) {
+      hrZones = Array.isArray((sportProfile as any).hrZones)
+        ? ((sportProfile as any).hrZones as any[])
+        : []
+      powerZones = Array.isArray((sportProfile as any).powerZones)
+        ? ((sportProfile as any).powerZones as any[])
+        : []
     }
 
     if (hrZones.length === 0 || powerZones.length === 0) {
@@ -737,8 +753,18 @@ export const IntervalsService = {
         where: { id: userId },
         select: { hrZones: true, powerZones: true }
       })
-      if (hrZones.length === 0) hrZones = (user?.hrZones as any[]) || DEFAULT_HR_ZONES
-      if (powerZones.length === 0) powerZones = (user?.powerZones as any[]) || DEFAULT_POWER_ZONES
+      if (hrZones.length === 0) {
+        hrZones =
+          Array.isArray(user?.hrZones) && user.hrZones.length > 0
+            ? (user.hrZones as any[])
+            : DEFAULT_HR_ZONES
+      }
+      if (powerZones.length === 0) {
+        powerZones =
+          Array.isArray(user?.powerZones) && user.powerZones.length > 0
+            ? (user.powerZones as any[])
+            : DEFAULT_POWER_ZONES
+      }
     }
     await yieldTaskHeartbeat()
 
