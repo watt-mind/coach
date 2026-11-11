@@ -331,6 +331,7 @@ export function buildStructureAiCallOptions(params: {
   entityType: string
   entityId: string
   timeoutMs: number
+  retryThinkingLevel?: NonNullable<LlmTrackingContext['thinkingLevelOverride']>
 }): LlmTrackingContext {
   const base: LlmTrackingContext = {
     userId: params.userId,
@@ -347,7 +348,7 @@ export function buildStructureAiCallOptions(params: {
 
   return {
     ...base,
-    thinkingLevelOverride: 'low'
+    thinkingLevelOverride: params.retryThinkingLevel ?? 'low'
   }
 }
 

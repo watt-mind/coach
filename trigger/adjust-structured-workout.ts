@@ -72,7 +72,6 @@ import {
 import {
   STRUCTURE_GENERATION_TASK_MAX_DURATION_MS,
   STRUCTURE_GENERATION_TASK_MAX_DURATION_SEC,
-  WORKOUT_STRUCTURE_AI_MAX_RETRIES,
   WORKOUT_STRUCTURE_AI_TIMEOUT_MS
 } from '../server/utils/workout-ai-timeouts'
 import {
@@ -982,29 +981,23 @@ OUTPUT JSON matching the schema.`
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const aiStartedAt = Date.now()
-        const isRetry = attempt > 1
         const aiOptions = buildStructureAiCallOptions({
           attempt,
           userId: workout.userId,
           operation: 'adjust_structured_workout',
           entityType,
           entityId: entityId!,
-          timeoutMs: WORKOUT_STRUCTURE_AI_TIMEOUT_MS
+          timeoutMs: WORKOUT_STRUCTURE_AI_TIMEOUT_MS,
+          // The adjust flow retries with deeper reasoning than the generate flow;
+          // preserved from the previous inline options so only attempt 1 changes.
+          retryThinkingLevel: 'high'
         })
         if (generatorMode === 'draft_json_v1') {
           const draft = await generateStructuredAnalysis(
             promptForAttempt,
             workoutPlanDraftSchema,
             'flash',
-            {
-              userId: workout.userId,
-              operation: 'adjust_structured_workout',
-              entityType,
-              entityId: entityId!,
-              maxRetries: WORKOUT_STRUCTURE_AI_MAX_RETRIES,
-              timeoutMs: WORKOUT_STRUCTURE_AI_TIMEOUT_MS,
-              thinkingLevelOverride: isRetry ? 'high' : undefined
-            }
+            aiOptions
           )
           lastAiOutputForRetry = draft
           console.log('[AdjustStructuredWorkout] Compact draft generated', {
@@ -1025,15 +1018,7 @@ OUTPUT JSON matching the schema.`
             promptForAttempt,
             isStrength ? strengthWorkoutStructureSchema : workoutStructureSchema,
             'flash',
-            {
-              userId: workout.userId,
-              operation: 'adjust_structured_workout',
-              entityType,
-              entityId: entityId!,
-              maxRetries: WORKOUT_STRUCTURE_AI_MAX_RETRIES,
-              timeoutMs: WORKOUT_STRUCTURE_AI_TIMEOUT_MS,
-              thinkingLevelOverride: isRetry ? 'high' : undefined
-            }
+            aiOptions
           )) as any
           lastAiOutputForRetry = structure
         }
