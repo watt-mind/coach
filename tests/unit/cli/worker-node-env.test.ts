@@ -2,7 +2,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { pathToFileURL, fileURLToPath } from 'node:url'
+import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
+import ts from 'typescript'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ensureNodeEnv } from '../../../cli/worker/node-env'
 
@@ -145,36 +147,66 @@ describe('worker node-env guard', () => {
       expect(guardCall).toBeLessThan(firstDynamicImport)
     })
 
-    it('behaves like realtime-bus: a module-load read before the guard sees the wrong env', async () => {
-      // realtime-bus.ts computes CHANNEL_NAMESPACE once at module load
-      // (realtime-bus.ts:52). This probe mimics that shape: whatever
-      // NODE_ENV is at import time is baked in.
-      const dir = await mkdtemp(join(tmpdir(), 'cw660-node-env-'))
+    it('executes the CLI and observes the environment when command modules load', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'cw660-cli-order-'))
+      const commands = ['start', 'ping', 'status', 'clean']
       try {
-        const probe = join(dir, 'probe.mjs')
+        await writeFile(join(dir, 'dotenv.mjs'), '')
         await writeFile(
-          probe,
-          'export const seenAtLoad = process.env.NODE_ENV\n' +
-            "export const namespaced = process.env.NODE_ENV === 'development'\n"
+          join(dir, 'commander.mjs'),
+          `export class Command {
+            name() { return this }
+            description() { return this }
+            version() { return this }
+            addCommand() { return this }
+            parse() { console.log(JSON.stringify(globalThis.commandLoads)) }
+          }`
         )
+        await writeFile(
+          join(dir, 'node-env.mjs'),
+          ts.transpileModule(readNodeEnvSource(), {
+            compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
+          }).outputText
+        )
+        for (const command of commands) {
+          await writeFile(
+            join(dir, `${command}.mjs`),
+            `globalThis.commandLoads ??= [];
+             globalThis.commandLoads.push([${JSON.stringify(command)}, process.env.NODE_ENV]);
+             export const ${command}Command = {};`
+          )
+        }
+        const source = readCliSource()
+          .replace(/(['"])dotenv\/config\1/g, "'./dotenv.mjs'")
+          .replace(/(['"])commander\1/g, "'./commander.mjs'")
+          .replace(/(['"])\.\/(node-env|start|ping|status|clean)\1/g, "'./$2.mjs'")
+        const run = async (cli: string) => {
+          await writeFile(join(dir, 'cli.mjs'), cli)
+          const env = { ...process.env }
+          delete env.NODE_ENV
+          return JSON.parse(
+            execFileSync(process.execPath, [join(dir, 'cli.mjs'), 'status'], {
+              env,
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe']
+            }).trim()
+          )
+        }
+        const expected = commands.map((command) => [command, 'development'])
+        expect(await run(source)).toEqual(expected)
 
-        // Correct order (what cli.ts does): guard, then load.
-        delete process.env.NODE_ENV
-        ensureNodeEnv()
-        const good = await import(`${pathToFileURL(probe).href}?good=1`)
-        expect(good.seenAtLoad).toBe('development')
-        expect(good.namespaced).toBe(true)
-
-        // Wrong order (guard moved below the imports): load, then guard.
-        // The load already baked in the pre-guard env — too late.
-        delete process.env.NODE_ENV
-        const bad = await import(`${pathToFileURL(probe).href}?bad=1`)
-        expect(bad.seenAtLoad).toBeUndefined()
-        expect(bad.namespaced).toBe(false)
-        ensureNodeEnv()
-        expect(process.env.NODE_ENV).toBe('development')
-        // The late guard cannot retroactively fix the earlier load.
-        expect(bad.seenAtLoad).toBeUndefined()
+        // Behavioral negative controls execute the same entrypoint with only
+        // the ordering defect introduced; no source-position assertion is used.
+        const lateGuard = source
+          .replace(/^ensureNodeEnv\(\)\s*$/m, '')
+          .replace('const program =', 'ensureNodeEnv()\nconst program =')
+        expect(await run(lateGuard)).not.toEqual(expected)
+        const staticCommand = source.replace(
+          "const { startCommand } = await import('./start.mjs')",
+          "import { startCommand } from './start.mjs'"
+        )
+        expect(await run(staticCommand)).not.toEqual(expected)
+        expect(await run("import './start.mjs'\n" + source)).not.toEqual(expected)
       } finally {
         await rm(dir, { recursive: true, force: true })
       }
