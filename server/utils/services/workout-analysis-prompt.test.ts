@@ -239,6 +239,120 @@ describe('buildAnalysisFactsPromptBlock / buildAnalysisGuardrailInstructions', (
   })
 })
 
+describe('cadence stability applicability rows (CW-532)', () => {
+  // Same shape as the CW-427 threshold fixture: warmup, 3 x 4 min work reps at
+  // a flat 92 rpm, recovery jogs, an endurance-buffer block, cooldown. With a
+  // cadence stream the reps scope cleanly (applicable); without one the
+  // signal is withheld with a reason — and the prompt must say why.
+  const CADENCE_BLOCKS = [
+    { seconds: 600, watts: 150, cadence: 85, intensity: 0.54 },
+    { seconds: 240, watts: 271, cadence: 92, intensity: 0.97 },
+    { seconds: 240, watts: 140, cadence: 80, intensity: 0.5 },
+    { seconds: 240, watts: 274, cadence: 92, intensity: 0.98 },
+    { seconds: 240, watts: 140, cadence: 80, intensity: 0.5 },
+    { seconds: 240, watts: 276, cadence: 92, intensity: 0.99 },
+    { seconds: 240, watts: 140, cadence: 80, intensity: 0.5 },
+    { seconds: 900, watts: 223, cadence: 88, intensity: 0.8 },
+    { seconds: 300, watts: 120, cadence: 70, intensity: 0.43 }
+  ]
+
+  const CADENCE_PLAN = {
+    durationSec: 3240,
+    structuredWorkout: {
+      steps: [
+        { type: 'Warmup', durationSeconds: 600, power: { value: 54, units: '%' } },
+        { type: 'Interval', durationSeconds: 240, power: { value: 97, units: '%' } },
+        { type: 'Rest', durationSeconds: 240, power: { value: 50, units: '%' } },
+        { type: 'Interval', durationSeconds: 240, power: { value: 98, units: '%' } },
+        { type: 'Rest', durationSeconds: 240, power: { value: 50, units: '%' } },
+        { type: 'Interval', durationSeconds: 240, power: { value: 99, units: '%' } },
+        { type: 'Rest', durationSeconds: 240, power: { value: 50, units: '%' } },
+        { type: 'Interval', durationSeconds: 900, power: { value: 80, units: '%' } },
+        { type: 'Cooldown', durationSeconds: 300, power: { value: 43, units: '%' } }
+      ]
+    }
+  }
+
+  function buildCadenceStabilityWorkout(withCadence: boolean) {
+    const time: number[] = []
+    const watts: number[] = []
+    const cadence: number[] = []
+    const heartrate: number[] = []
+    const laps: any[] = []
+    let cursor = 0
+    for (const block of CADENCE_BLOCKS) {
+      const start = cursor
+      for (let index = 0; index < block.seconds; index++) {
+        time.push(cursor)
+        watts.push(block.watts + ((index % 5) - 2))
+        cadence.push(block.cadence)
+        heartrate.push(110 + Math.round(block.watts / 6))
+        cursor++
+      }
+      laps.push({
+        type: 'WORK',
+        start_index: start,
+        end_index: cursor - 1,
+        moving_time: block.seconds,
+        average_watts: block.watts,
+        average_cadence: block.cadence,
+        average_heartrate: 110 + Math.round(block.watts / 6),
+        intensity: block.intensity
+      })
+    }
+    const streams: Record<string, number[]> = { time, watts, heartrate }
+    if (withCadence) streams.cadence = cadence
+    return {
+      id: 'workout-cw-532',
+      title: '4x4 Threshold',
+      type: 'Ride',
+      durationSec: time.length,
+      averageWatts: 193,
+      averageHr: 145,
+      intensity: 0.85,
+      variabilityIndex: 1.14,
+      trainer: false,
+      rawJson: { icu_intervals: laps },
+      streams
+    }
+  }
+
+  it('renders the cadence-stability applicability reason when the reps carry no cadence', () => {
+    const facts = buildWorkoutAnalysisFactsV2({
+      workout: buildCadenceStabilityWorkout(false),
+      plannedWorkout: CADENCE_PLAN,
+      sportSettings: { ftp: 280 }
+    } as any)
+
+    expect(facts.guardrails.archetype.sessionSteadiness).toBe('intervalled')
+    expect(facts.performanceSignals.applicability.cadenceStability.applicable).toBe(false)
+
+    const block = buildAnalysisFactsPromptBlock(facts)
+    expect(block).toContain('- Cadence Stability Applicable: No')
+    expect(block).toContain(
+      '- Cadence Stability Applicability Reason: Cadence stability is unavailable because cadence telemetry is missing or too sparse.'
+    )
+  })
+
+  it('omits the cadence-stability rows when the signal is applicable', () => {
+    const facts = buildWorkoutAnalysisFactsV2({
+      workout: buildCadenceStabilityWorkout(true),
+      plannedWorkout: CADENCE_PLAN,
+      sportSettings: { ftp: 280 }
+    } as any)
+
+    expect(facts.performanceSignals.applicability.cadenceStability).toEqual({
+      applicable: true,
+      reason: null
+    })
+
+    const block = buildAnalysisFactsPromptBlock(facts)
+    expect(block).not.toContain('Cadence Stability Applicable')
+    // The score itself still renders — only the applicability rows are gated.
+    expect(block).toContain('- Cadence Stability Score: 100')
+  })
+})
+
 describe('resolveSplitPacingVerdictApplicability', () => {
   const withSteadiness = (sessionSteadiness: string, primaryArchetype = 'endurance') =>
     ({ guardrails: { archetype: { sessionSteadiness, primaryArchetype } } }) as any
