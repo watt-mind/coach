@@ -196,6 +196,46 @@ export const nutritionRepository = {
     }
   },
 
+  /** Persist a merged upload only if its snapshot is still current, including absence. */
+  async saveWithVersionCheck(
+    userId: string,
+    date: Date,
+    snapshot: { id: string; updatedAt: Date } | null,
+    data: Prisma.NutritionUncheckedUpdateInput,
+    source: string
+  ) {
+    try {
+      if (!snapshot) {
+        // A unique (userId, date) constraint arbitrates concurrent first uploads.
+        return await prisma.nutrition.create({
+          data: {
+            ...data,
+            userId,
+            date,
+            sourcePrecedence: source
+          } as Prisma.NutritionUncheckedCreateInput
+        })
+      }
+      return await prisma.nutrition.update({
+        where: { id: snapshot.id, userId, date, updatedAt: snapshot.updatedAt },
+        data: {
+          ...data,
+          sourcePrecedence: source,
+          // Ensure a successful upload invalidates its snapshot even within one millisecond.
+          updatedAt: new Date(Math.max(Date.now(), snapshot.updatedAt.getTime() + 1))
+        }
+      })
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === (snapshot ? 'P2025' : 'P2002')
+      ) {
+        return CONCURRENT_UPDATE_CONFLICT
+      }
+      throw error
+    }
+  },
+
   /**
    * Update analysis status
    */
