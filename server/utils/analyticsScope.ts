@@ -19,7 +19,21 @@ async function hasAnalyticsAthleteAccess(userId: string, athleteId: string) {
   const teams = await teamRepository.getTeamsForUser(userId)
   for (const team of teams) {
     const athleteInTeam = await teamRepository.checkTeamAccess(team.teamId, athleteId)
-    if (athleteInTeam) return true
+    if (!athleteInTeam) continue
+
+    const isStaff = await teamRepository.checkTeamAccess(team.teamId, userId, [
+      'OWNER',
+      'ADMIN',
+      'COACH'
+    ])
+    if (isStaff) return true
+
+    // Sharing a team only exposes athletes who explicitly allow teammate access.
+    const athlete = await prisma.user.findUnique({
+      where: { id: athleteId },
+      select: { teamVisibility: true }
+    })
+    if (athlete?.teamVisibility === 'TEAMMATES') return true
   }
 
   return false
