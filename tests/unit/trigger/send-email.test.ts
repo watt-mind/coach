@@ -114,6 +114,19 @@ describe('sendEmailTask', () => {
     )
   })
 
+  it('returns SUPPRESSED when dispatch rejects consent changed after creation', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(mockUser as any)
+    vi.mocked(prisma.emailDelivery.findFirst).mockResolvedValue(null)
+    vi.mocked(prisma.emailSuppression.findFirst).mockResolvedValue(null)
+    vi.mocked(prisma.emailDelivery.create).mockResolvedValue({ id: 'delivery-1' } as any)
+    vi.spyOn(EmailDeliveryService, 'dispatch').mockResolvedValue({
+      id: 'delivery-1',
+      status: 'SUPPRESSED'
+    } as any)
+    const result = await EmailDeliveryService.runSendEmail(mockPayload)
+    expect(result.status).toBe('SUPPRESSED')
+  })
+
   it('should skip as a true duplicate when the colliding delivery already sent successfully (driver-adapter error shape)', async () => {
     vi.mocked(prisma.user.findUnique).mockResolvedValue(mockUser as any)
     vi.mocked(prisma.emailDelivery.findFirst).mockResolvedValue(null)
