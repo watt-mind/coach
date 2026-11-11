@@ -114,7 +114,7 @@ export default defineEventHandler(async (event) => {
       hrv: w.hrv ?? existing.hrv,
       restingHr: w.restingHr ?? existing.restingHr,
       hoursSlept: toSleepHours(w.sleepHours, w.sleepSecs) ?? existing.hoursSlept,
-      sleepScore: w.sleepQuality ?? w.sleepScore ?? existing.sleepScore,
+      sleepScore: w.sleepScore ?? existing.sleepScore,
       recoveryScore: w.recoveryScore ?? existing.recoveryScore,
       readiness: w.readiness ?? existing.readiness
     })

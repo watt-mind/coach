@@ -83,4 +83,103 @@ describe('GET /api/wellness/trend', () => {
       })
     ])
   })
+  it.each([
+    [85, 72, 85],
+    [null, 72, 72],
+    [0, 72, 0],
+    [null, 0, 0],
+    [null, null, null],
+    [null, undefined, undefined]
+  ])(
+    'uses score sources only (wellness %s, daily %s → %s)',
+    async (sleepScore, dailyScore, expected) => {
+      const handler = await getHandler()
+      vi.mocked(wellnessRepository.getForUser).mockResolvedValue([
+        {
+          date: new Date('2026-03-11T00:00:00Z'),
+          sleepScore,
+          sleepQuality: 10,
+          sleepHours: null,
+          sleepSecs: null
+        }
+      ] as any)
+      vi.mocked(prisma.dailyMetric.findMany).mockResolvedValue(
+        dailyScore === undefined
+          ? []
+          : ([{ date: new Date('2026-03-11T00:00:00Z'), sleepScore: dailyScore }] as any)
+      )
+
+      const result = await handler({
+        query: { startDate: '2026-03-05', endDate: '2026-03-11' }
+      } as any)
+
+      expect(result).toHaveLength(1)
+      expect(result[0].sleepScore).toBe(expected)
+      const serialized = JSON.parse(JSON.stringify(result))[0]
+      if (expected === undefined) {
+        expect(serialized).not.toHaveProperty('sleepScore')
+      } else {
+        expect(serialized.sleepScore).toBe(expected)
+      }
+    }
+  )
+
+  it('retains daily-only rows, date ordering and nullish field merges', async () => {
+    const handler = await getHandler()
+    vi.mocked(prisma.dailyMetric.findMany).mockResolvedValue([
+      {
+        date: new Date('2026-03-11T00:00:00Z'),
+        hrv: 40,
+        restingHr: 60,
+        hoursSlept: 8,
+        sleepScore: 70,
+        recoveryScore: 75
+      },
+      {
+        date: new Date('2026-03-05T00:00:00Z'),
+        hrv: 45,
+        restingHr: 55,
+        hoursSlept: 7,
+        sleepScore: 80,
+        recoveryScore: 85
+      }
+    ] as any)
+    vi.mocked(wellnessRepository.getForUser).mockResolvedValue([
+      {
+        date: new Date('2026-03-11T00:00:00Z'),
+        hrv: 50,
+        restingHr: null,
+        sleepHours: 0,
+        sleepSecs: 28800,
+        sleepScore: null,
+        sleepQuality: null,
+        recoveryScore: 0,
+        readiness: 90
+      }
+    ] as any)
+
+    const result = await handler({
+      query: { startDate: '2026-03-05', endDate: '2026-03-11' }
+    } as any)
+
+    expect(result).toEqual([
+      {
+        date: '2026-03-05',
+        hrv: 45,
+        restingHr: 55,
+        hoursSlept: 7,
+        sleepScore: 80,
+        recoveryScore: 85
+      },
+      {
+        date: '2026-03-11',
+        hrv: 50,
+        restingHr: 60,
+        hoursSlept: 0,
+        sleepScore: 70,
+        recoveryScore: 0,
+        readiness: 90
+      }
+    ])
+  })
 })
