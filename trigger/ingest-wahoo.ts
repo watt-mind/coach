@@ -164,9 +164,9 @@ export const ingestWahooTask = task({
             const hash = crypto.createHash('sha256').update(buffer).digest('hex')
             const filename = `wahoo_${workout.id}.fit`
 
-            // Store in FitFile table
+            // Reuse only this user’s file; identical bytes may belong to other athletes.
             let fitFile = await prisma.fitFile.findFirst({
-              where: { hash }
+              where: { userId, hash }
             })
 
             if (fitFile) {
