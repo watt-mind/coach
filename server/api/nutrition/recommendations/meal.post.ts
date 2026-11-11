@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import { requireAuth } from '../../../utils/auth-guard'
 import { dispatchTask } from '../../../utils/task-dispatcher'
 import { prisma } from '../../../utils/db'
@@ -16,6 +15,39 @@ function targetsMatch(contextJson: any, body: any) {
     same(requested.protein, body.targetProtein) &&
     same(requested.kcal, body.targetKcal)
   )
+}
+
+const constraintFields = [
+  'dietaryProfile',
+  'foodAllergies',
+  'foodIntolerances',
+  'lifestyleExclusions'
+] as const
+
+function constraintsMatch(contextJson: any, settings: any) {
+  const stored = contextJson?.constraints
+  // Missing or malformed snapshots cannot establish that the cached meal is still suitable.
+  if (!stored) return false
+
+  // Keep normalization aligned with mealRecommendationService.toUpperStringArray.
+  const normalize = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value
+          .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          .map((entry) => entry.trim().toUpperCase())
+      : []
+
+  return constraintFields.every((field) => {
+    if (
+      !Array.isArray(stored[field]) ||
+      stored[field].some((entry: unknown) => typeof entry !== 'string')
+    ) {
+      return false
+    }
+    const previous = new Set(normalize(stored[field]))
+    const current = new Set(normalize(settings?.[field]))
+    return previous.size === current.size && [...previous].every((entry) => current.has(entry))
+  })
 }
 
 export default defineEventHandler(async (event) => {
@@ -38,8 +70,8 @@ export default defineEventHandler(async (event) => {
     kcal: Number(body.targetKcal || 0)
   }
 
-  // Reopening the modal, or clicking suggest twice, should not cost another model run. Only an
-  // explicit "regenerate" (forceLlm) bypasses the cache.
+  // Reuse only while targets and current dietary constraints still match.
+  // Explicit regeneration (forceLlm) always bypasses the cache.
   if (!body.forceLlm) {
     const recent = await prisma.nutritionRecommendation.findFirst({
       where: {
@@ -53,7 +85,23 @@ export default defineEventHandler(async (event) => {
       orderBy: { updatedAt: 'desc' }
     })
 
-    if (recent && targetsMatch(recent.contextJson as any, body)) {
+    const settings = recent
+      ? await prisma.userNutritionSettings.findUnique({
+          where: { userId },
+          select: {
+            dietaryProfile: true,
+            foodAllergies: true,
+            foodIntolerances: true,
+            lifestyleExclusions: true
+          }
+        })
+      : null
+
+    if (
+      recent &&
+      targetsMatch(recent.contextJson, body) &&
+      constraintsMatch(recent.contextJson, settings)
+    ) {
       return {
         success: true,
         cached: true,
