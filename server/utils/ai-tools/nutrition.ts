@@ -1093,6 +1093,7 @@ export const nutritionTools = (userId: string, timezone: string, aiSettings: AiS
   }),
 
   lock_meal_to_plan: tool({
+    needsApproval: async () => aiSettings.aiRequireToolApproval,
     description:
       "Lock a specific meal option into the user's nutrition plan for a metabolic window.",
     inputSchema: z.object({
