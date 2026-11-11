@@ -238,7 +238,7 @@ function matchSource(source: string | null | undefined, filter: any) {
   if (filter === undefined) return true
   if (typeof filter === 'string') return source === filter
   if (filter && typeof filter === 'object' && 'not' in filter) {
-    return source !== filter.not
+    return source != null && source !== filter.not
   }
   throw new Error(`Unsupported source filter: ${JSON.stringify(filter)}`)
 }
@@ -420,7 +420,7 @@ describe('POST /api/workouts/planned/bulk-delete', () => {
     expect(response).toMatchObject({
       success: true,
       preview: true,
-      counts: { plannedWorkouts: 3, events: 2, notes: 2, total: 7 }
+      counts: { plannedWorkouts: 3, events: 1, notes: 2, total: 6 }
     })
     const findWhere = vi.mocked(prisma.plannedWorkout.findMany).mock.calls[0][0].where
     expect(findWhere).not.toHaveProperty('externalId')
@@ -449,15 +449,17 @@ describe('POST /api/workouts/planned/bulk-delete', () => {
     })
     expect(deleted.deleted).toMatchObject({
       plannedWorkouts: 3,
-      events: 2,
+      events: 1,
       notes: 2,
-      total: 7
+      total: 6
     })
     // Survivors are exactly the out-of-scope records.
     expect(db.planned.map((row) => row.id).sort()).toEqual(
       ['pw-num-1', 'pw-num-2', 'pw-synced', 'pw-out', 'pw-other', 'pw-other-local'].sort()
     )
-    expect(db.events.map((row) => row.id).sort()).toEqual(['ev-int-1', 'ev-out', 'ev-other'].sort())
+    expect(db.events.map((row) => row.id).sort()).toEqual(
+      ['ev-int-1', 'ev-local-null', 'ev-out', 'ev-other'].sort()
+    )
     expect(db.notes.map((row) => row.id).sort()).toEqual(
       ['note-int-1', 'note-out', 'note-other'].sort()
     )
