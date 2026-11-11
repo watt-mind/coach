@@ -216,12 +216,13 @@
       })
     }),
     onFinish: async () => {
-      if (!chatPageActive) return
+      const finishedRoomId = outgoingSendAttempts.roomId || currentRoomId.value
+      if (!chatPageActive || finishedRoomId !== currentRoomId.value) return
       pendingComposerDraft.value = ''
       refreshRuns()
       if (currentRoomId.value) {
         await loadMessages(currentRoomId.value, { silent: true })
-        if (!chatPageActive) return
+        if (!chatPageActive || finishedRoomId !== currentRoomId.value) return
         restartTurnPolling({ forceForMs: 15000 })
         void processQueuedMessagesForRoom(currentRoomId.value)
       }
@@ -981,7 +982,8 @@
     approved: boolean
     result?: string
   }) => {
-    if (pendingApprovalSubmissions.has(approval.approvalId)) return
+    const approvalRoomId = currentRoomId.value
+    if (!approvalRoomId || pendingApprovalSubmissions.has(approval.approvalId)) return
     pendingApprovalSubmissions.add(approval.approvalId)
 
     const approvalToolMsg = {
@@ -1001,9 +1003,12 @@
       ],
       createdAt: new Date()
     }
-    chat.messages = [...(chat.messages as any[]), approvalToolMsg] as any
     try {
-      await (chat as any).sendMessage()
+      await outgoingSendAttempts.send(approvalRoomId, () => {
+        chat.messages = [...(chat.messages as any[]), approvalToolMsg] as any
+        return (chat as any).sendMessage(undefined, { body: { roomId: approvalRoomId } })
+      })
+      if (approvalRoomId !== currentRoomId.value) return
       awaitingTurnStart.value = true
       restartTurnPolling({ forceForMs: 15000 })
       if (currentRoomId.value) {

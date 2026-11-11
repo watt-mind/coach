@@ -274,3 +274,152 @@ it.each([false, true])(
     expect(rooms['room-b']).toEqual([other])
   }
 )
+
+it.each([false, true])(
+  'serializes overlapping room dispatch and preserves failed retries (queued=%s)',
+  async (queued) => {
+    const tracker = createChatSendAttemptTracker()
+    const a = {
+      id: 'a-id',
+      roomId: 'a',
+      text: 'original A',
+      attachments: [{ url: '/a.png' }],
+      failed: false
+    }
+    const b = { ...a, id: 'b-id', roomId: 'b', text: 'original B' }
+    const rooms: Record<string, (typeof a)[]> = { a: queued ? [a] : [], b: queued ? [b] : [] }
+    const gates = { a: Promise.withResolvers<undefined>(), b: Promise.withResolvers<undefined>() }
+    const startedA = Promise.withResolvers<undefined>()
+    const startedB = Promise.withResolvers<undefined>()
+    const calls: string[] = []
+    const inFlight = new Set<string>()
+    let currentRoom = 'a'
+    let awaiting = true
+    const dispatch = (message: typeof a, retry = false) => {
+      inFlight.add(message.roomId)
+      return dispatchChatOutgoing(message, {
+        queued: retry || queued,
+        getQueued: (room) => rooms[room]!,
+        setQueued: (room, messages) => {
+          rooms[room] = messages
+        },
+        send: () =>
+          tracker.send(message.roomId, async () => {
+            calls.push(message.id)
+            if (retry) return
+            if (message === a) startedA.resolve(undefined)
+            else startedB.resolve(undefined)
+            await gates[message.roomId as 'a' | 'b'].promise
+            if (message === a) {
+              // SDK reports failure then resolves; navigation must not reset B's composer.
+              const errorRoom = tracker.roomId
+              tracker.onError(new Error('room-a 503'))
+              if (errorRoom === currentRoom) awaiting = false
+            }
+          }),
+        sent: () => {
+          calls.push('sent:' + message.roomId)
+        },
+        failed: () => {
+          calls.push('failed:' + message.roomId)
+        },
+        settled: () => {
+          inFlight.delete(message.roomId)
+        }
+      })
+    }
+    const first = dispatch(a)
+    await startedA.promise
+    currentRoom = 'b'
+    const second = dispatch(b)
+    // Complete B's transport gate first: it must still wait for A's callback/settlement.
+    gates.b.resolve(undefined)
+    await Promise.resolve(undefined)
+    expect(calls).toEqual(['a-id'])
+    expect(tracker.roomId).toBe('a')
+    gates.a.resolve(undefined)
+    await first
+    await startedB.promise
+    await second
+    expect(awaiting).toBe(true)
+    expect(rooms.a).toEqual([{ ...a, failed: true }])
+    expect(rooms.b).toEqual([])
+    expect(calls.filter((call) => call.endsWith(':a'))).toEqual(['failed:a'])
+    expect(calls.filter((call) => call.endsWith(':b'))).toEqual(['sent:b'])
+    expect(inFlight.size).toBe(0)
+    await dispatch(a, true)
+    expect(rooms.a).toEqual([])
+    expect(calls.slice(-2)).toEqual(['a-id', 'sent:a'])
+  }
+)
+
+it.each(['a', 'b'])(
+  'correlates real SDK completion/error callbacks when room %s fails',
+  async (failedRoom) => {
+    const { Chat } = await import('@ai-sdk/vue')
+    const tracker = createChatSendAttemptTracker()
+    const a = { id: 'a-client', roomId: 'a', failed: false }
+    const b = { id: 'b-client', roomId: 'b', failed: false }
+    const rooms: Record<string, (typeof a)[]> = { a: [a], b: [b] }
+    const gates = { a: Promise.withResolvers<undefined>(), b: Promise.withResolvers<undefined>() }
+    const started = Promise.withResolvers<undefined>()
+    const callbacks: string[] = []
+    const chat = new Chat({
+      transport: {
+        sendMessages: async ({ body }) => {
+          const room = body!.roomId as 'a' | 'b'
+          if (room === 'a') started.resolve(undefined)
+          await gates[room].promise
+          if (room === failedRoom) throw new Error(room + ' 503')
+          return new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: 'start', messageId: room + '-assistant' })
+              controller.enqueue({ type: 'finish', finishReason: 'stop' })
+              controller.close()
+            }
+          })
+        },
+        reconnectToStream: async () => null
+      },
+      onError: (error) => {
+        callbacks.push('error:' + tracker.roomId)
+        tracker.onError(error)
+      },
+      onFinish: () => {
+        callbacks.push('finish:' + tracker.roomId)
+      }
+    })
+    const dispatch = (message: typeof a) =>
+      dispatchChatOutgoing(message, {
+        queued: true,
+        getQueued: (room) => rooms[room]!,
+        setQueued: (room, messages) => {
+          rooms[room] = messages
+        },
+        send: () =>
+          tracker.send(message.roomId, () =>
+            chat.sendMessage(
+              {
+                id: message.id,
+                role: 'user',
+                parts: [{ type: 'text', text: message.roomId }]
+              },
+              { body: { roomId: message.roomId } }
+            )
+          ),
+        sent: () => {},
+        failed: () => {}
+      })
+    const first = dispatch(a)
+    await started.promise
+    const second = dispatch(b)
+    gates.b.resolve(undefined)
+    gates.a.resolve(undefined)
+    await Promise.all([first, second])
+    expect(rooms[failedRoom]).toEqual([{ ...(failedRoom === 'a' ? a : b), failed: true }])
+    expect(rooms[failedRoom === 'a' ? 'b' : 'a']).toEqual([])
+    expect(callbacks).toContain('error:' + failedRoom)
+    expect(callbacks).toContain('finish:' + (failedRoom === 'a' ? 'b' : 'a'))
+    expect(tracker.roomId).toBeUndefined()
+  }
+)

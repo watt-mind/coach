@@ -6,8 +6,10 @@ export function clearChatOutgoingQueue() {
 }
 
 // The SDK reports transport failures through onError, but resolves sendMessage.
-// Observe only the current invocation; a previous chat.error is not an outcome.
+// Serialize invocations across rooms: SDK callbacks carry no request identity.
+// A previous chat.error is not an outcome for the next invocation.
 export function createChatSendAttemptTracker() {
+  let tail: Promise<void> | undefined
   let active: { roomId: string; error?: Error } | undefined
   return {
     get roomId() {
@@ -17,6 +19,12 @@ export function createChatSendAttemptTracker() {
       if (active) active.error = error
     },
     async send(roomId: string, send: () => Promise<unknown>) {
+      const previous = tail
+      let release!: () => void
+      tail = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      if (previous) await previous
       const attempt = { roomId } as { roomId: string; error?: Error }
       active = attempt
       try {
@@ -27,6 +35,7 @@ export function createChatSendAttemptTracker() {
         }
       } finally {
         if (active === attempt) active = undefined
+        release()
       }
     }
   }
