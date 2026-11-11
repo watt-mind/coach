@@ -18,7 +18,9 @@
   import { shouldHideAssistantBubble } from '~/utils/chat-message-state'
   import {
     CHAT_OUTGOING_QUEUE_STORAGE_KEY,
-    clearChatOutgoingQueue
+    clearChatOutgoingQueue,
+    createChatSendAttemptTracker,
+    dispatchChatOutgoing
   } from '~/utils/chat-outgoing-queue'
 
   const { t } = useTranslate('chat')
@@ -203,6 +205,8 @@
   const route = useRoute()
   const router = useRouter()
 
+  const outgoingSendAttempts = createChatSendAttemptTracker()
+
   // Initialize Chat class
   const chat = new Chat({
     transport: new DefaultChatTransport({
@@ -212,19 +216,22 @@
       })
     }),
     onFinish: async () => {
-      if (!chatPageActive) return
+      const finishedRoomId = outgoingSendAttempts.roomId || currentRoomId.value
+      if (!chatPageActive || finishedRoomId !== currentRoomId.value) return
       pendingComposerDraft.value = ''
       refreshRuns()
       if (currentRoomId.value) {
         await loadMessages(currentRoomId.value, { silent: true })
-        if (!chatPageActive) return
+        if (!chatPageActive || finishedRoomId !== currentRoomId.value) return
         restartTurnPolling({ forceForMs: 15000 })
         void processQueuedMessagesForRoom(currentRoomId.value)
       }
     },
     onError: (error) => {
-      // Always unblock the input — the turn is over whether it errored or not
-      awaitingTurnStart.value = false
+      const errorRoomId = outgoingSendAttempts.roomId || currentRoomId.value
+      outgoingSendAttempts.onError(error)
+      // A send finishing in another room must not reset the current composer.
+      if (errorRoomId === currentRoomId.value) awaitingTurnStart.value = false
 
       // Track chat error
       trackChatError(error.message || 'unknown')
@@ -234,7 +241,7 @@
         error.message?.includes('429') ||
         error.message?.toLowerCase().includes('quota exceeded')
       ) {
-        void handleChatQuotaExceeded()
+        if (errorRoomId === currentRoomId.value) void handleChatQuotaExceeded()
         return
       }
 
@@ -245,7 +252,7 @@
         // The backend executed successfully, but the frontend stream parser got confused.
         // We can just reload the messages to show the result.
         setTimeout(() => {
-          if (chatPageActive && currentRoomId.value) loadMessages(currentRoomId.value)
+          if (chatPageActive && errorRoomId === currentRoomId.value) loadMessages(errorRoomId)
         }, 1000)
         return
       }
@@ -398,12 +405,6 @@
       message
     ])
   }
-  const removeQueuedOutgoingMessage = (roomId: string, messageId: string) => {
-    setQueuedOutgoingMessages(
-      roomId,
-      getQueuedOutgoingMessages(roomId).filter((message) => message.id !== messageId)
-    )
-  }
   const setQueueDispatchInFlight = (roomId: string, inFlight: boolean) => {
     queueDispatchInFlightByRoom.value = {
       ...queueDispatchInFlightByRoom.value,
@@ -489,12 +490,13 @@
     }, delayMs)
   }
   const sendOutgoingMessage = async (message: {
+    roomId: string
     id: string
     text: string
     attachments: QueuedAttachment[]
   }) => {
     const parts = buildMessageParts(message.text, message.attachments)
-    await Promise.resolve(
+    await outgoingSendAttempts.send(message.roomId, () =>
       (chat as any).sendMessage(
         parts.length > 0
           ? {
@@ -507,11 +509,14 @@
             }
           : {
               text: message.text
-            }
+            },
+        { body: { roomId: message.roomId } }
       )
     )
-    awaitingTurnStart.value = true
-    restartTurnPolling({ forceForMs: 15000 })
+    if (message.roomId === currentRoomId.value) {
+      awaitingTurnStart.value = true
+      restartTurnPolling({ forceForMs: 15000 })
+    }
   }
   const processQueuedMessagesForRoom = async (roomId: string) => {
     if (!roomId || roomId !== currentRoomId.value) return
@@ -532,30 +537,33 @@
 
     setQueueDispatchInFlight(roomId, true)
 
-    try {
-      await sendOutgoingMessage({
-        id: nextQueuedMessage.id,
-        text: nextQueuedMessage.text,
-        attachments: nextQueuedMessage.attachments
-      })
-      removeQueuedOutgoingMessage(roomId, nextQueuedMessage.id)
-      scheduleQueueReconcile(roomId)
-    } catch (error: any) {
-      setQueuedOutgoingMessages(
-        roomId,
-        getQueuedOutgoingMessages(roomId).map((message) =>
-          message.id === nextQueuedMessage.id ? { ...message, failed: true } : message
-        )
-      )
-      toast.add({
-        title: 'Message failed to send',
-        description:
-          error?.message || 'Could not send the queued message. It will retry when ready.',
-        color: 'error'
-      })
-    } finally {
-      setQueueDispatchInFlight(roomId, false)
-    }
+    await dispatchChatOutgoing(nextQueuedMessage, {
+      queued: true,
+      getQueued: getQueuedOutgoingMessages,
+      setQueued: setQueuedOutgoingMessages,
+      send: () =>
+        sendOutgoingMessage({
+          roomId,
+          id: nextQueuedMessage.id,
+          text: nextQueuedMessage.text,
+          attachments: nextQueuedMessage.attachments
+        }),
+      sent: () => {
+        scheduleQueueReconcile(roomId)
+      },
+      failed: (error) => {
+        if (roomId === currentRoomId.value) awaitingTurnStart.value = false
+        toast.add({
+          title: 'Message failed to send',
+          description:
+            error?.message || 'Could not send the queued message. It will retry when ready.',
+          color: 'error'
+        })
+      },
+      settled: () => {
+        setQueueDispatchInFlight(roomId, false)
+      }
+    })
   }
   const chatMessages = computed(() => {
     const sanitizedMessages = (chat.messages as any[])
@@ -933,30 +941,37 @@
       input.value = ''
     } else {
       awaitingTurnStart.value = true
-      try {
-        await sendOutgoingMessage({
-          id: outgoingMessage.id,
-          text: submittedText,
-          attachments
-        })
-        input.value = ''
-      } catch (error: any) {
-        // The direct-send path bypassed the durable outgoing queue entirely, so a
-        // transient failure here used to just restore the composer text and leave
-        // no trace of the message anywhere else. Fall back to the same durable
-        // queue the "turn already active" branch above uses, so the message is
-        // retained, visible, and retried the same way. Reusing outgoingMessage.id
-        // (rather than generating a new one) means a retry can't duplicate a
-        // message that actually landed server-side before the client saw the error.
-        awaitingTurnStart.value = false
-        enqueueOutgoingMessage({ ...outgoingMessage, failed: true })
-        input.value = ''
-        toast.add({
-          title: 'Message failed to send',
-          description: error?.message || 'Could not send the message. It will retry when ready.',
-          color: 'error'
-        })
-      }
+      await dispatchChatOutgoing(outgoingMessage, {
+        queued: false,
+        getQueued: getQueuedOutgoingMessages,
+        setQueued: setQueuedOutgoingMessages,
+        send: () =>
+          sendOutgoingMessage({
+            roomId: outgoingMessage.roomId,
+            id: outgoingMessage.id,
+            text: submittedText,
+            attachments
+          }),
+        sent: () => {
+          if (outgoingMessage.roomId === currentRoomId.value) input.value = ''
+        },
+        failed: (error) => {
+          // The direct-send path bypassed the durable outgoing queue entirely, so a
+          // transient failure here used to just restore the composer text and leave
+          // no trace of the message anywhere else. Fall back to the same durable
+          // queue the "turn already active" branch above uses, so the message is
+          // retained, visible, and retried the same way. Reusing outgoingMessage.id
+          // (rather than generating a new one) means a retry can't duplicate a
+          // message that actually landed server-side before the client saw the error.
+          if (outgoingMessage.roomId === currentRoomId.value) awaitingTurnStart.value = false
+          if (outgoingMessage.roomId === currentRoomId.value) input.value = ''
+          toast.add({
+            title: 'Message failed to send',
+            description: error?.message || 'Could not send the message. It will retry when ready.',
+            color: 'error'
+          })
+        }
+      })
     }
   }
 
@@ -967,7 +982,8 @@
     approved: boolean
     result?: string
   }) => {
-    if (pendingApprovalSubmissions.has(approval.approvalId)) return
+    const approvalRoomId = currentRoomId.value
+    if (!approvalRoomId || pendingApprovalSubmissions.has(approval.approvalId)) return
     pendingApprovalSubmissions.add(approval.approvalId)
 
     const approvalToolMsg = {
@@ -987,9 +1003,12 @@
       ],
       createdAt: new Date()
     }
-    chat.messages = [...(chat.messages as any[]), approvalToolMsg] as any
     try {
-      await (chat as any).sendMessage()
+      await outgoingSendAttempts.send(approvalRoomId, () => {
+        chat.messages = [...(chat.messages as any[]), approvalToolMsg] as any
+        return (chat as any).sendMessage(undefined, { body: { roomId: approvalRoomId } })
+      })
+      if (approvalRoomId !== currentRoomId.value) return
       awaitingTurnStart.value = true
       restartTurnPolling({ forceForMs: 15000 })
       if (currentRoomId.value) {
