@@ -184,6 +184,9 @@ jobs:
         with:
           name: lighthouserc-report-${{ github.run_id }}
           path: .lighthouseci/
+          # upload-artifact v4+ skips dot-paths by default, so this step has
+          # been logging "No files were found" and never uploaded the reports.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 
