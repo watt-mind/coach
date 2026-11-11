@@ -50,12 +50,28 @@ export async function validateOAuthToken(event: H3Event) {
   }
 }
 
+export interface RequireAuthOptions {
+  /**
+   * Whether OAuth bearer tokens are accepted without required scopes. Defaults to false.
+   * Nonempty requiredScopes explicitly permit scoped OAuth access. Set false
+   * to reject OAuth even with required scopes, or true to deliberately permit
+   * OAuth without required scopes (e.g. scope-preserving websocket tokens).
+   */
+  allowOAuth?: boolean
+}
+
 /**
  * Unified auth guard that supports Session, API Key, and OAuth Bearer tokens.
  * @param event - H3 event
  * @param requiredScopes - Optional scopes for OAuth tokens (Sessions and API keys are assumed to have all scopes)
+ * @param options - Optional settings; `allowOAuth: false` rejects OAuth bearer
+ * tokens even when they would satisfy `requiredScopes`.
  */
-export async function requireAuth(event: H3Event, requiredScopes?: string[]) {
+export async function requireAuth(
+  event: H3Event,
+  requiredScopes?: string[],
+  options?: RequireAuthOptions
+) {
   const ensureActiveUser = (user: { deactivatedAt?: Date | null } | null) => {
     if (user?.deactivatedAt) {
       throw createError({
@@ -93,6 +109,15 @@ export async function requireAuth(event: H3Event, requiredScopes?: string[]) {
   const oauth = await validateOAuthToken(event)
   if (oauth) {
     ensureActiveUser(oauth.user)
+    if (
+      options?.allowOAuth === false ||
+      (options?.allowOAuth !== true && !requiredScopes?.length)
+    ) {
+      throw createError({
+        statusCode: 403,
+        message: 'OAuth bearer tokens are not accepted on this endpoint'
+      })
+    }
     // Check scopes if required
     if (requiredScopes && requiredScopes.length > 0) {
       const hasScopes = requiredScopes.every((s) => oauth.scopes.includes(s))
