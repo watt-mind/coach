@@ -2,6 +2,9 @@ import './init'
 import { logger, task } from '@trigger.dev/sdk/v3'
 import { prisma } from '../server/utils/db'
 
+// Twice the 300-second task duration, allowing conservative recovery after interruption.
+export const SYNC_CLAIM_LEASE_MS = 10 * 60 * 1000
+
 /**
  * Process Sync Queue - Retry failed Intervals.icu syncs
  *
@@ -23,10 +26,16 @@ export const processSyncQueueTask = task({
       // Direct prisma access here is acceptable as it's not subject to business logic like duplicates.
       const pendingItems = await prisma.syncQueue.findMany({
         where: {
-          status: 'PENDING',
-          attempts: {
-            lt: 3 // Less than 3 attempts
-          }
+          OR: [
+            { status: 'PENDING', attempts: { lt: 3 } },
+            {
+              status: 'PROCESSING',
+              OR: [
+                { lastAttempt: null },
+                { lastAttempt: { lt: new Date(Date.now() - SYNC_CLAIM_LEASE_MS) } }
+              ]
+            }
+          ]
         },
         orderBy: {
           createdAt: 'asc' // Oldest first
@@ -51,15 +60,21 @@ export const processSyncQueueTask = task({
 
       // Process each item
       for (const item of pendingItems) {
+        const abandoned = item.status === 'PROCESSING'
+        const attempts = item.attempts + (abandoned ? 1 : 0)
+        const claimTimestamp = new Date()
+        // Include the observed timestamp and budget: only one recovery contender can win.
         const claimed = await prisma.syncQueue.updateMany({
           where: {
             id: item.id,
-            status: 'PENDING'
+            status: abandoned ? 'PROCESSING' : 'PENDING',
+            lastAttempt: item.lastAttempt,
+            attempts: item.attempts
           },
-          data: {
-            status: 'PROCESSING',
-            lastAttempt: new Date()
-          }
+          data:
+            attempts >= 3
+              ? { status: 'FAILED', attempts, error: 'Sync claim expired after maximum attempts' }
+              : { status: 'PROCESSING', attempts, lastAttempt: claimTimestamp }
         })
 
         if (claimed.count === 0) {
@@ -67,80 +82,31 @@ export const processSyncQueueTask = task({
           continue
         }
 
-        logger.log(`Processing sync item`, {
-          id: item.id,
-          entityType: item.entityType,
-          operation: item.operation,
-          attempts: item.attempts
-        })
+        if (attempts >= 3) {
+          failed++
+          continue
+        }
 
         try {
-          // Dynamically import to avoid circular dependencies
           const { processSyncQueueItem } = await import('../server/utils/intervals-sync')
-
-          // Process the sync operation
-          const success = await processSyncQueueItem(item)
-
-          if (success) {
-            // Mark as completed
-            await prisma.syncQueue.update({
-              where: { id: item.id },
-              data: {
-                status: 'COMPLETED',
-                error: null,
-                completedAt: new Date()
-              }
-            })
-
-            succeeded++
-            logger.log(`Sync succeeded for item ${item.id}`)
-          } else {
-            // Increment attempts
-            const newAttempts = item.attempts + 1
-            const maxAttemptsReached = newAttempts >= 3
-
-            await prisma.syncQueue.update({
-              where: { id: item.id },
-              data: {
-                attempts: newAttempts,
-                status: maxAttemptsReached ? 'FAILED' : 'PENDING',
-                lastAttempt: new Date()
-              }
-            })
-
-            failed++
-
-            if (maxAttemptsReached) {
-              logger.warn(`Sync failed after max attempts for item ${item.id}`, {
-                entityType: item.entityType,
-                entityId: item.entityId,
-                operation: item.operation
-              })
-            } else {
-              logger.log(`Sync failed, will retry (attempt ${newAttempts}/3) for item ${item.id}`)
-            }
-          }
+          // The helper owns completion/retry writes, including SUPERSEDED and permanent failures.
+          const success = await processSyncQueueItem({
+            ...item,
+            status: 'PROCESSING',
+            attempts,
+            lastAttempt: claimTimestamp
+          })
+          if (success) succeeded++
+          else failed++
         } catch (error) {
-          // Log error and increment attempts
-          const newAttempts = item.attempts + 1
-          const maxAttemptsReached = newAttempts >= 3
-
-          logger.error(`Error processing sync item ${item.id}`, {
-            error,
-            entityType: item.entityType,
-            operation: item.operation
-          })
-
-          await prisma.syncQueue.update({
-            where: { id: item.id },
+          await prisma.syncQueue.updateMany({
+            where: { id: item.id, status: 'PROCESSING', lastAttempt: claimTimestamp, attempts },
             data: {
-              attempts: newAttempts,
-              status: maxAttemptsReached ? 'FAILED' : 'PENDING',
-              error: error instanceof Error ? error.message : String(error),
-              lastAttempt: new Date()
+              attempts: attempts + 1,
+              status: attempts + 1 >= 3 ? 'FAILED' : 'PENDING',
+              error: error instanceof Error ? error.message : String(error)
             }
           })
-
           failed++
         }
       }
