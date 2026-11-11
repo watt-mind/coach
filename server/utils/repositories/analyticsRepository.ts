@@ -198,7 +198,20 @@ export const analyticsRepository = {
         where: { id: scope.targetId },
         include: { members: true }
       })
-      return group?.members.map((member: any) => member.athleteId) || []
+      const memberIds: string[] = group?.members.map((member: any) => member.athleteId) || []
+      if (!group || group.teamId || memberIds.length === 0) return memberIds
+
+      // Private membership can outlive a coaching relationship. Recheck on every read.
+      const relationships = await prisma.coachingRelationship.findMany({
+        where: {
+          coachId: requestingUserId,
+          athleteId: { in: memberIds },
+          status: 'ACTIVE'
+        },
+        select: { athleteId: true }
+      })
+      const activeAthleteIds = new Set(relationships.map((relationship) => relationship.athleteId))
+      return memberIds.filter((athleteId) => activeAthleteIds.has(athleteId))
     }
 
     if (scope.target === 'team' && scope.targetId) {
