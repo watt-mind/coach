@@ -4,6 +4,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   symlinkSync,
   writeFileSync
@@ -103,11 +104,7 @@ function fullDiffHash(repo: TempRepo): string {
 
 /** Create an isolated repo wired to the real hook and real tool binaries. */
 function createTempRepo(): TempRepo {
-  const dir = join(
-    tmpdir(),
-    `pre-commit-test-${process.pid}-${Math.random().toString(36).slice(2)}`
-  )
-  mkdirSync(dir, { recursive: true })
+  const dir = mkdtempSync(join(tmpdir(), 'pre-commit-test-'))
   const stashLog = join(dir, 'stash-invocations.log')
   writeFileSync(stashLog, '')
   const repo: TempRepo = { dir, env: repoEnv(dir, stashLog), stashLog }
