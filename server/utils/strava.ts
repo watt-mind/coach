@@ -422,6 +422,28 @@ export function normalizeStravaActivity(activity: StravaActivity, userId: string
   }
 }
 
+/** Persistent provider failure whose integration status could not be saved. */
+class StravaStreamsRecordingError extends AggregateError {
+  constructor(providerError: StravaStreamsError, recordingError: unknown) {
+    super(
+      [providerError, recordingError],
+      `${providerError.message}; failed to record integration failure`
+    )
+    this.name = 'StravaStreamsRecordingError'
+  }
+}
+
+/** A body-free error keeps upstream HTML and user data out of telemetry. */
+export class StravaStreamsError extends Error {
+  readonly transient: boolean
+
+  constructor(readonly statusCode: number) {
+    super(`Strava Streams API error: ${statusCode}`)
+    this.name = 'StravaStreamsError'
+    this.transient = statusCode >= 500 && statusCode < 600
+  }
+}
+
 /**
  * Fetch activity streams (time-series data including pacing)
  * @see https://developers.strava.com/docs/reference/#api-Streams-getActivityStreams
@@ -447,18 +469,45 @@ export async function fetchStravaActivityStreams(
     key_by_type: 'true'
   })
 
-  const response = await fetch(`${url}?${params}`, {
-    headers: {
-      Authorization: `Bearer ${validIntegration.accessToken}`
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(`${url}?${params}`, {
+      headers: {
+        Authorization: `Bearer ${validIntegration.accessToken}`
+      }
+    })
+
+    if (response.ok) {
+      return await response.json()
     }
-  })
 
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Strava Streams API error: ${response.status} ${errorText}`)
+    const error = new StravaStreamsError(response.status)
+    // Never read or interpolate provider bodies, even when mislabeled as JSON.
+    await response.body?.cancel().catch(() => {
+      // Cleanup failure must not mask the HTTP status or bypass retries.
+    })
+    if (!error.transient) {
+      throw error
+    }
+    if (attempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt))
+      continue
+    }
+
+    try {
+      // updateMany tolerates a concurrent disconnect without masking the provider error.
+      await prisma.integration.updateMany({
+        where: { id: integration.id, userId: integration.userId, provider: 'strava' },
+        data: {
+          syncStatus: 'FAILED',
+          errorMessage: `${error.message}; streams unavailable for activity ${activityId} after 3 attempts. Please retry later.`
+        }
+      })
+    } catch (recordingError) {
+      // Preserve both failures without putting database details in the public message.
+      throw new StravaStreamsRecordingError(error, recordingError)
+    }
+    throw error
   }
-
-  return await response.json()
 }
 
 /**
