@@ -94,10 +94,11 @@ export async function requireAuth(
     })
     if (user) {
       ensureActiveUser(user)
-      event.context.user = user
+      const effectiveUser = session?.user?.isCoaching ? { ...user, isAdmin: false } : user
+      event.context.user = effectiveUser
       event.context.session = session
       event.context.authType = 'session'
-      return user
+      return effectiveUser
     }
   }
 
