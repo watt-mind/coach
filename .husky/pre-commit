@@ -1,111 +1,97 @@
 #!/bin/sh
-# Pre-commit hook (CW-758): run lint-staged without its repository-global
-# backup stash.
-#
-# lint-staged's default backup (`git stash push --keep-index` /
-# `git stash store`) writes to the repository-global stash, which is shared
-# across every worktree of this repo. Concurrent commits from different
-# worktrees can therefore see, conflict with, or drop each other's
-# "lint-staged automatic backup" entries.
-#
-# `--no-stash` avoids every `git stash` operation, but lint-staged then also
-# skips restoring the hidden partially-staged changes when a task fails, so
-# this hook snapshots the staged and unstaged diffs into a temp dir (outside
-# the repo) and restores them if lint-staged fails. No `git stash` command is
-# used anywhere in this workflow.
+# Keep recovery worktree-local: never use the repository-global stash.
+# exec also makes signal handling independent of Husky's sh -e wrapper.
+exec node --input-type=module <<'NODE'
+import { spawn, execFileSync } from 'node:child_process'
+import * as fs from 'node:fs'
+import { join, dirname, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 
-# Husky executes this file with `sh -e`; every command that may legitimately
-# fail is guarded so a lint-staged failure still runs the restore path below
-# instead of aborting the script early.
-
-SNAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-snapshot.XXXXXX")" || exit 1
-STAGED_PATCH="$SNAP_DIR/staged.patch"
-UNSTAGED_PATCH="$SNAP_DIR/unstaged.patch"
-MERGE_DIR="$SNAP_DIR/merge"
-GIT_DIR="$(git rev-parse --git-path .)" || {
-  rm -rf "$SNAP_DIR"
-  exit 1
+const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trimEnd()
+process.chdir(git('rev-parse', '--show-toplevel'))
+const backup = fs.mkdtempSync(join(tmpdir(), 'pre-commit-snapshot-'))
+const index = resolve(git('rev-parse', '--git-path', 'index'))
+const gitDir = resolve(git('rev-parse', '--absolute-git-dir'))
+const records = []
+let ready = false
+let signalStatus = 0
+let child
+const signals = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }
+for (const [signal, status] of Object.entries(signals)) {
+  process.on(signal, () => {
+    signalStatus ||= status
+    if (child) {
+      try { process.kill(-child.pid, signal) } catch (error) {
+        if (error.code !== 'ESRCH') console.error(error)
+      }
+    }
+  })
 }
 
-# Snapshot the staged (HEAD -> index) and unstaged (index -> worktree) diffs.
-# `git diff` exits 1 when differences are found, which is expected; only
-# exits > 1 are errors.
-git diff --cached --binary --full-index --no-color --no-ext-diff \
-  --src-prefix=a/ --dst-prefix=b/ >"$STAGED_PATCH"
-if [ "$?" -gt 1 ]; then
-  rm -rf "$SNAP_DIR"
-  exit 1
-fi
-git diff --binary --full-index --no-color --no-ext-diff \
-  --src-prefix=a/ --dst-prefix=b/ >"$UNSTAGED_PATCH"
-if [ "$?" -gt 1 ]; then
-  rm -rf "$SNAP_DIR"
-  exit 1
-fi
+function capture(path) {
+  const destination = join(backup, String(records.length))
+  let stat
+  try { stat = fs.lstatSync(path) } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  // Submodules/directories are not formatter inputs; do not traverse them.
+  if (stat?.isDirectory()) return
+  const record = { path, destination, mode: stat?.mode, missing: !stat }
+  if (stat?.isSymbolicLink()) record.link = fs.readlinkSync(path)
+  else if (stat) fs.copyFileSync(path, destination)
+  records.push(record)
+}
 
-# Snapshot in-progress merge state, if any (lint-staged only backs this up
-# when its own stash backup is enabled).
-mkdir -p "$MERGE_DIR"
-for meta in MERGE_HEAD MERGE_MODE MERGE_MSG; do
-  if [ -f "$GIT_DIR/$meta" ]; then
-    cp "$GIT_DIR/$meta" "$MERGE_DIR/$meta" || {
-      rm -rf "$SNAP_DIR"
-      exit 1
+function restoreFiles(files) {
+  // Restore only bytes actually captured; never checkout unrelated files.
+  for (const record of files) {
+    if (record.missing) fs.rmSync(record.path, { force: true })
+    else {
+      fs.mkdirSync(dirname(record.path), { recursive: true })
+      fs.rmSync(record.path, { force: true })
+      if (record.link !== undefined) fs.symlinkSync(record.link, record.path)
+      else {
+        fs.copyFileSync(record.destination, record.path)
+        fs.chmodSync(record.path, record.mode)
+      }
     }
-  fi
-done
+  }
+}
 
-if npx lint-staged --no-stash; then
-  LINT_STATUS=0
-else
-  LINT_STATUS=$?
-fi
+function restore() {
+  restoreFiles(records)
+  // The raw index preserves content, stages and assume-unchanged/skip-worktree
+  // flags. No diff/apply or user whitespace policy participates in recovery.
+  fs.copyFileSync(join(backup, 'index'), `${index}.cw758-restore`)
+  fs.renameSync(`${index}.cw758-restore`, index)
+}
 
-if [ "$LINT_STATUS" -eq 0 ]; then
-  rm -rf "$SNAP_DIR"
-  rm -f "$GIT_DIR/lint-staged_unstaged.patch"
-  exit 0
-fi
-
-# lint-staged failed: restore the exact pre-hook index and working tree.
-# With `--no-stash` lint-staged implies `--no-revert`, so task fixes may be
-# applied and staged, and hidden partially-staged changes may not have been
-# restored. Rebuild from the snapshot instead.
-RESTORE_FAILED=0
-
-if git rev-parse --verify --quiet HEAD >/dev/null; then
-  if ! git read-tree --reset -i HEAD; then
-    RESTORE_FAILED=1
-  fi
-else
-  if ! git read-tree --empty; then
-    RESTORE_FAILED=1
-  fi
-fi
-if [ -s "$STAGED_PATCH" ] && ! git apply --cached "$STAGED_PATCH"; then
-  RESTORE_FAILED=1
-fi
-# Worktree currently holds task modifications; reset it to the restored
-# index so the unstaged patch applies onto exactly the state it was made from.
-if ! git checkout --force -- .; then
-  RESTORE_FAILED=1
-fi
-if [ -s "$UNSTAGED_PATCH" ] && ! git apply "$UNSTAGED_PATCH"; then
-  RESTORE_FAILED=1
-fi
-for meta in MERGE_HEAD MERGE_MODE MERGE_MSG; do
-  if [ -f "$MERGE_DIR/$meta" ]; then
-    if ! cp "$MERGE_DIR/$meta" "$GIT_DIR/$meta"; then
-      RESTORE_FAILED=1
-    fi
-  fi
-done
-
-if [ "$RESTORE_FAILED" -eq 0 ]; then
-  rm -rf "$SNAP_DIR"
-  rm -f "$GIT_DIR/lint-staged_unstaged.patch"
-else
-  echo "pre-commit: failed to fully restore pre-hook state; snapshot kept at $SNAP_DIR" >&2
-fi
-
-exit "$LINT_STATUS"
+let status = 1
+try {
+  fs.copyFileSync(index, join(backup, 'index'))
+  const paths = execFileSync('git', ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRD', '--no-renames'], { encoding: 'utf8' }).split('\0').filter(Boolean)
+  for (const path of paths) capture(resolve(path))
+  for (const name of ['MERGE_HEAD', 'MERGE_MODE', 'MERGE_MSG', 'lint-staged_unstaged.patch']) capture(join(gitDir, name))
+  fs.writeFileSync(join(backup, 'manifest.json'), JSON.stringify({ index, records }, null, 2))
+  ready = true
+  if (!signalStatus) {
+    child = spawn('npx', ['lint-staged', '--no-stash'], { stdio: 'inherit', detached: true })
+    status = await new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', code => resolve(code ?? 1))
+    })
+  }
+  status = signalStatus || status
+  if (status) restore()
+  else restoreFiles(records.filter(record => record.path === join(gitDir, 'lint-staged_unstaged.patch')))
+  fs.rmSync(backup, { recursive: true, force: true })
+} catch (error) {
+  console.error('pre-commit:', error)
+  if (ready) {
+    try { restore() } catch (recoveryError) { console.error('pre-commit recovery:', recoveryError) }
+  }
+  console.error(`pre-commit: recovery snapshot kept at ${backup}`)
+  status = signalStatus || 1
+}
+process.exitCode = status
+NODE

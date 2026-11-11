@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
   chmodSync,
   copyFileSync,
@@ -296,6 +296,105 @@ describe('pre-commit hook (CW-758)', () => {
       // ... and the stash was never touched.
       expect(stashInvocations(repo)).toBe('')
       expect(stashList(repo)).toBe(stashBefore)
+    },
+    HOOK_TIMEOUT_MS
+  )
+
+  it.each(['error', 'fix'])(
+    'restores bytes and index flags independently of apply.whitespace=%s',
+    (policy) => {
+      const repo = createTempRepo()
+      writeFile(repo, 'notes.txt', 'baseline\n')
+      writeFile(repo, 'space.txt', 'baseline\n')
+      writeFile(repo, 'skip.txt', 'baseline\n')
+      git(repo, 'add', '-A')
+      expect(commit(repo, 'baseline').status).toBe(0)
+      git(repo, 'config', 'apply.whitespace', policy)
+      git(repo, 'update-index', '--assume-unchanged', 'notes.txt')
+      git(repo, 'update-index', '--skip-worktree', 'skip.txt')
+      writeFile(repo, 'notes.txt', 'invisible edit  \n')
+      writeFile(repo, 'skip.txt', 'invisible skip edit\n')
+      writeFile(repo, 'space.txt', 'trailing spaces  \n')
+      writeFile(repo, 'bad.js', 'let a = missing;\n')
+      git(repo, 'add', 'bad.js')
+      writeFile(repo, 'bad.js', 'let a = missing;\n// unstaged  \n')
+      const indexBefore = git(repo, 'ls-files', '--stage', '-v')
+      const flags = git(repo, 'ls-files', '-v')
+      const stashBefore = stashList(repo)
+      writeFileSync(repo.stashLog, '')
+      expect(commit(repo, 'fail').status).not.toBe(0)
+      // Git commit may refresh stat cache; compare staged objects/modes/flags.
+      expect(git(repo, 'ls-files', '--stage', '-v')).toBe(indexBefore)
+      expect(git(repo, 'ls-files', '-v')).toBe(flags)
+      expect(readWorktree(repo, 'notes.txt')).toBe('invisible edit  \n')
+      expect(readWorktree(repo, 'skip.txt')).toBe('invisible skip edit\n')
+      expect(readWorktree(repo, 'space.txt')).toBe('trailing spaces  \n')
+      expect(readWorktree(repo, 'bad.js')).toBe('let a = missing;\n// unstaged  \n')
+      expect(stashInvocations(repo)).toBe('')
+      expect(stashList(repo)).toBe(stashBefore)
+    },
+    HOOK_TIMEOUT_MS
+  )
+
+  it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)(
+    'recovers hidden partially staged bytes after %s',
+    async (signal) => {
+      const repo = createTempRepo()
+      writeFile(repo, 'part.js', 'const a = 1;\nconsole.log(a);\n')
+      git(repo, 'add', '-A')
+      expect(commit(repo, 'baseline').status).toBe(0)
+      writeFile(
+        repo,
+        'eslint.config.mjs',
+        `import { writeFileSync } from 'node:fs'
+writeFileSync('lint-ready', '')
+await new Promise(resolve => setTimeout(resolve, 60000))
+export default []
+`
+      )
+      writeFile(repo, 'part.js', 'const a = 2;\nconsole.log(a);\n')
+      git(repo, 'add', 'part.js')
+      const worktree = 'const a = 2;\nconsole.log(a);\n// hidden comment  \n'
+      writeFile(repo, 'part.js', worktree)
+      const indexBefore = git(repo, 'ls-files', '--stage', '-v')
+      const head = git(repo, 'rev-parse', 'HEAD')
+      const stashBefore = stashList(repo)
+      writeFileSync(repo.stashLog, '')
+      const child = spawn('git', ['commit', '-m', 'interrupt'], {
+        cwd: repo.dir,
+        env: repo.env,
+        detached: true,
+        stdio: 'pipe'
+      })
+      let output = ''
+      child.stdout.on('data', (data) => {
+        output += data
+      })
+      child.stderr.on('data', (data) => {
+        output += data
+      })
+      const closed = new Promise((resolve) => child.once('close', resolve))
+      try {
+        const deadline = Date.now() + 30000
+        while (!existsSync(join(repo.dir, 'lint-ready')) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        expect(existsSync(join(repo.dir, 'lint-ready')), output).toBe(true)
+        expect(readWorktree(repo, 'part.js')).not.toContain('hidden comment')
+        process.kill(-child.pid!, signal)
+        await closed
+        expect(git(repo, 'ls-files', '--stage', '-v')).toBe(indexBefore)
+        expect(readWorktree(repo, 'part.js')).toBe(worktree)
+        expect(git(repo, 'rev-parse', 'HEAD')).toBe(head)
+        expect(stashInvocations(repo)).toBe('')
+        expect(stashList(repo)).toBe(stashBefore)
+      } finally {
+        try {
+          process.kill(-child.pid!, 'SIGKILL')
+        } catch {
+          /* already exited */
+        }
+      }
     },
     HOOK_TIMEOUT_MS
   )
