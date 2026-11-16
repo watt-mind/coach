@@ -5,7 +5,7 @@ import {
 } from '../../../utils/repositories/nutritionRepository'
 import { generateStructuredAnalysis } from '../../../utils/gemini'
 import { z } from 'zod/v3'
-import { getUserTimezone, getStartOfLocalDateUTC } from '../../../utils/date'
+import { getUserTimezone, buildZonedDateTimeFromUtcDate } from '../../../utils/date'
 import { metabolicService } from '../../../utils/services/metabolicService'
 import { nutritionPlanService } from '../../../utils/services/nutritionPlanService'
 import { getUserNutritionSettings } from '../../../utils/nutrition/settings'
@@ -157,8 +157,10 @@ export default defineEventHandler(async (event) => {
       if (timeMatch) {
         const h = parseInt(timeMatch[1]!)
         const m = parseInt(timeMatch[2]!)
-        const baseDate = getStartOfLocalDateUTC(timezone, targetDateStr)
-        const finalDate = new Date(baseDate.getTime() + (h * 3600 + m * 60) * 1000)
+        const hh = String(h).padStart(2, '0')
+        const mm = String(m).padStart(2, '0')
+        const baseDate = new Date(`${targetDateStr}T00:00:00Z`)
+        const finalDate = buildZonedDateTimeFromUtcDate(baseDate, `${hh}:${mm}`, timezone)
         normalizedLoggedAt = finalDate.toISOString()
       }
     }

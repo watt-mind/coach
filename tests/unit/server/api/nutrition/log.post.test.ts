@@ -9,6 +9,7 @@ import { generateStructuredAnalysis } from '../../../../../server/utils/gemini'
 import { metabolicService } from '../../../../../server/utils/services/metabolicService'
 import { nutritionPlanService } from '../../../../../server/utils/services/nutritionPlanService'
 import { getUserNutritionSettings } from '../../../../../server/utils/nutrition/settings'
+import { getUserTimezone } from '../../../../../server/utils/date'
 
 vi.stubGlobal('defineEventHandler', (fn: any) => fn)
 vi.stubGlobal('getRouterParam', (event: any, name: string) => event.params?.[name])
@@ -43,10 +44,13 @@ vi.mock('../../../../../server/utils/gemini', () => ({
   generateStructuredAnalysis: vi.fn()
 }))
 
-vi.mock('../../../../../server/utils/date', () => ({
-  getUserTimezone: vi.fn(async () => 'UTC'),
-  getStartOfLocalDateUTC: vi.fn((_: string, dateStr: string) => new Date(`${dateStr}T00:00:00Z`))
-}))
+vi.mock('../../../../../server/utils/date', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../../server/utils/date')>()
+  return {
+    ...actual,
+    getUserTimezone: vi.fn(async () => 'UTC')
+  }
+})
 
 vi.mock('../../../../../server/utils/nutrition/settings', () => ({
   getUserNutritionSettings: vi.fn()
@@ -71,6 +75,7 @@ describe('POST /api/nutrition/:id/log', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(requireAuth).mockResolvedValue({ id: 'user-1' } as any)
+    vi.mocked(getUserTimezone).mockResolvedValue('UTC')
     vi.mocked(getUserNutritionSettings).mockResolvedValue({ mealPattern: [] } as any)
     vi.mocked(generateStructuredAnalysis).mockResolvedValue({
       items: [
@@ -304,5 +309,222 @@ describe('POST /api/nutrition/:id/log', () => {
       } as any)
     ).rejects.toMatchObject({ statusCode: 409 })
     expect(nutritionPlanService.reconcileLoggedMealsForDate).not.toHaveBeenCalled()
+  })
+
+  describe('daylight-saving local wall-clock (CW-792)', () => {
+    const setupCreate = (timezone: string, mealPattern: unknown = []) => {
+      vi.mocked(getUserTimezone).mockResolvedValue(timezone)
+      vi.mocked(getUserNutritionSettings).mockResolvedValue({ mealPattern } as any)
+      vi.mocked(nutritionRepository.getByDate).mockResolvedValue(null)
+      vi.mocked(nutritionRepository.create).mockResolvedValue({ id: 'n1' } as any)
+    }
+
+    const loggedAtOf = (result: any) => result.itemsAdded[0].logged_at as string
+
+    it.each([
+      {
+        name: 'spring forward',
+        dateStr: '2026-03-08',
+        expected: '2026-03-08T12:00:00.000Z'
+      },
+      {
+        name: 'fall back',
+        dateStr: '2026-11-01',
+        expected: '2026-11-01T13:00:00.000Z'
+      }
+    ])('resolves explicit 08:00 on $name to $expected', async ({ dateStr, expected }) => {
+      setupCreate('America/New_York')
+      vi.mocked(generateStructuredAnalysis).mockResolvedValue({
+        items: [
+          {
+            name: 'Oatmeal',
+            calories: 150,
+            protein: 5,
+            carbs: 27,
+            fat: 3,
+            mealType: 'breakfast',
+            logged_at: '08:00'
+          }
+        ]
+      } as any)
+
+      const handler = await getHandler()
+      const result = await handler({
+        params: { id: dateStr },
+        body: { query: 'oatmeal at 8am', mealType: 'breakfast' }
+      } as any)
+
+      expect(loggedAtOf(result)).toBe(expected)
+      const payload = vi.mocked(nutritionRepository.create).mock.calls[0]![0]
+      expect(payload.date).toEqual(new Date(`${dateStr}T00:00:00Z`))
+      expect(payload.breakfast[0]).toMatchObject({ logged_at: expected })
+      expect(result.itemsAdded[0]).toMatchObject({ logged_at: expected })
+    })
+
+    it.each([
+      {
+        name: 'spring forward',
+        dateStr: '2026-03-08',
+        expected: '2026-03-08T12:00:00.000Z'
+      },
+      {
+        name: 'fall back',
+        dateStr: '2026-11-01',
+        expected: '2026-11-01T13:00:00.000Z'
+      }
+    ])(
+      'anchors missing time to the breakfast schedule on $name ($expected)',
+      async ({ dateStr, expected }) => {
+        setupCreate('America/New_York', [{ name: 'breakfast', time: '08:00' }])
+        vi.mocked(generateStructuredAnalysis).mockResolvedValue({
+          items: [
+            {
+              name: 'Oatmeal',
+              calories: 150,
+              protein: 5,
+              carbs: 27,
+              fat: 3,
+              mealType: 'breakfast'
+            }
+          ]
+        } as any)
+
+        const handler = await getHandler()
+        const result = await handler({
+          params: { id: dateStr },
+          body: { query: 'oatmeal', mealType: 'breakfast' }
+        } as any)
+
+        expect(loggedAtOf(result)).toBe(expected)
+        const payload = vi.mocked(nutritionRepository.create).mock.calls[0]![0]
+        expect(payload.date).toEqual(new Date(`${dateStr}T00:00:00Z`))
+        expect(payload.breakfast[0]).toMatchObject({ logged_at: expected })
+      }
+    )
+
+    it.each([
+      {
+        name: 'spring forward',
+        dateStr: '2026-03-08',
+        expected: '2026-03-08T12:00:00.000Z'
+      },
+      {
+        name: 'fall back',
+        dateStr: '2026-11-01',
+        expected: '2026-11-01T13:00:00.000Z'
+      }
+    ])('resolves AI hydration 08:00 on $name to $expected', async ({ dateStr, expected }) => {
+      setupCreate('America/New_York')
+      vi.mocked(generateStructuredAnalysis).mockResolvedValue({
+        items: [
+          {
+            name: 'Water',
+            entryType: 'HYDRATION',
+            waterMl: 500,
+            calories: 0,
+            protein: 0,
+            carbs: 0,
+            fat: 0,
+            logged_at: '08:00'
+          }
+        ]
+      } as any)
+
+      const handler = await getHandler()
+      const result = await handler({
+        params: { id: dateStr },
+        body: { query: '500 ml water at 8am' }
+      } as any)
+
+      expect(loggedAtOf(result)).toBe(expected)
+      const payload = vi.mocked(nutritionRepository.create).mock.calls[0]![0]
+      expect(payload.date).toEqual(new Date(`${dateStr}T00:00:00Z`))
+      expect(payload.snacks[0]).toMatchObject({ logged_at: expected, water_ml: 500 })
+      expect(result.hydration).toEqual([expect.objectContaining({ date: dateStr, fluidMl: 500 })])
+    })
+
+    it('resolves 08:00 on an ordinary EDT date to 12:00Z', async () => {
+      const dateStr = '2026-07-21'
+      setupCreate('America/New_York')
+      vi.mocked(generateStructuredAnalysis).mockResolvedValue({
+        items: [
+          {
+            name: 'Oatmeal',
+            calories: 150,
+            protein: 5,
+            carbs: 27,
+            fat: 3,
+            mealType: 'breakfast',
+            logged_at: '08:00'
+          }
+        ]
+      } as any)
+
+      const handler = await getHandler()
+      const result = await handler({
+        params: { id: dateStr },
+        body: { query: 'oatmeal at 8am', mealType: 'breakfast' }
+      } as any)
+
+      expect(loggedAtOf(result)).toBe('2026-07-21T12:00:00.000Z')
+      const payload = vi.mocked(nutritionRepository.create).mock.calls[0]![0]
+      expect(payload.date).toEqual(new Date('2026-07-21T00:00:00Z'))
+    })
+
+    it('resolves 12:00 UTC on an ordinary date to 12:00Z', async () => {
+      const dateStr = '2026-07-21'
+      setupCreate('UTC')
+      vi.mocked(generateStructuredAnalysis).mockResolvedValue({
+        items: [
+          {
+            name: 'Banana',
+            calories: 90,
+            protein: 1,
+            carbs: 23,
+            fat: 0,
+            mealType: 'lunch',
+            logged_at: '12:00'
+          }
+        ]
+      } as any)
+
+      const handler = await getHandler()
+      const result = await handler({
+        params: { id: dateStr },
+        body: { query: 'banana at noon', mealType: 'lunch' }
+      } as any)
+
+      expect(loggedAtOf(result)).toBe('2026-07-21T12:00:00.000Z')
+      const payload = vi.mocked(nutritionRepository.create).mock.calls[0]![0]
+      expect(payload.date).toEqual(new Date('2026-07-21T00:00:00Z'))
+    })
+
+    it('passes absolute ISO timestamps through unchanged', async () => {
+      const dateStr = '2026-03-08'
+      setupCreate('America/New_York')
+      vi.mocked(generateStructuredAnalysis).mockResolvedValue({
+        items: [
+          {
+            name: 'Banana',
+            calories: 90,
+            protein: 1,
+            carbs: 23,
+            fat: 0,
+            mealType: 'lunch',
+            logged_at: '2026-03-08T12:00:00.000Z'
+          }
+        ]
+      } as any)
+
+      const handler = await getHandler()
+      const result = await handler({
+        params: { id: dateStr },
+        body: { query: 'banana', mealType: 'lunch' }
+      } as any)
+
+      expect(loggedAtOf(result)).toBe('2026-03-08T12:00:00.000Z')
+      const payload = vi.mocked(nutritionRepository.create).mock.calls[0]![0]
+      expect(payload.date).toEqual(new Date('2026-03-08T00:00:00Z'))
+    })
   })
 })
