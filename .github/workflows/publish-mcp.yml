@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: [self-hosted, linux-container]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: mcp-registry-publish
     permissions:

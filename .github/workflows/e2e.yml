@@ -52,7 +52,11 @@ env:
 jobs:
   e2e:
     name: Playwright E2E
-    runs-on: [self-hosted, e2e]
+    # GitHub-hosted (CW-1035): docker + compose are preinstalled, the per-run
+    # compose project/ports from CW-666 keep working, and a fork PR can no
+    # longer land arbitrary code on an on-prem host (CW-922). Cold image builds
+    # are slower than the warm e2e host, inside the generous timeout below.
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     if: |
       (github.event.action != 'labeled' ||
