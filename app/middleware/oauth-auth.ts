@@ -19,10 +19,19 @@ export default defineNuxtRouteMiddleware(async (to) => {
       query: newQuery
     }
 
-    // signout and redirect to the same page (which will then hit the unauthenticated block below)
-    return signOut({
-      callbackUrl: useNuxtApp().$router.resolve(targetUrl).fullPath
-    }) as Promise<void>
+    const callbackUrl = useNuxtApp().$router.resolve(targetUrl).fullPath
+
+    // signOut() POSTs to the auth sign-out endpoint; a transient failure there
+    // must not crash the OAuth consent page (CW-372). Fall back to a plain
+    // redirect that strips `prompt` so the flow can continue.
+    try {
+      await signOut({
+        callbackUrl
+      })
+      return
+    } catch {
+      return navigateTo(callbackUrl)
+    }
   }
 
   // If not authenticated, redirect to the specialized OAuth login page
@@ -34,8 +43,16 @@ export default defineNuxtRouteMiddleware(async (to) => {
     ?.deactivatedAt
 
   if (deactivatedAt) {
-    return signOut({
-      callbackUrl: '/login?error=deactivated'
-    }) as Promise<void>
+    const callbackUrl = '/login?error=deactivated'
+    // Same defensive guard as above: a failing sign-out request must still get
+    // the user to the deactivated login page instead of erroring (CW-372).
+    try {
+      await signOut({
+        callbackUrl
+      })
+      return
+    } catch {
+      return navigateTo(callbackUrl)
+    }
   }
 })
