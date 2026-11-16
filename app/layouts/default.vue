@@ -22,7 +22,7 @@
   provide('isTReady', isTReady)
 
   const config = useRuntimeConfig()
-  const { data, refresh } = useAuth()
+  const { data } = useAuth()
   const { logout } = useAppLogout()
   const user = computed(() => data.value?.user)
   const toast = useToast()
@@ -112,9 +112,11 @@
         description: 'Returning to admin account',
         color: 'success'
       })
-      // Refresh session and redirect
-      await refresh()
-      await navigateTo('/admin/users')
+      // CW-851: clear impersonated Pinia caches, then perform a full document
+      // navigation so impersonated in-memory state cannot survive. Matches the
+      // global ImpersonationBanner exit behavior.
+      resetClientState()
+      window.location.href = '/admin/users'
     } catch (error) {
       console.error('Failed to stop impersonation:', error)
       toast.add({
