@@ -147,20 +147,20 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       chart.js:
-        specifier: ^4.5.1
-        version: 4.5.1
+        specifier: ^4.6.1
+        version: 4.6.1
       chartjs-adapter-date-fns:
         specifier: ^3.0.0
-        version: 3.0.0(chart.js@4.5.1)(date-fns@4.4.0)
+        version: 3.0.0(chart.js@4.6.1)(date-fns@4.4.0)
       chartjs-plugin-annotation:
         specifier: ^3.1.0
-        version: 3.1.0(chart.js@4.5.1)
+        version: 3.1.0(chart.js@4.6.1)
       chartjs-plugin-datalabels:
         specifier: ^2.2.0
-        version: 2.2.0(chart.js@4.5.1)
+        version: 2.2.0(chart.js@4.6.1)
       chartjs-plugin-zoom:
         specifier: ^2.2.0
-        version: 2.2.0(chart.js@4.5.1)
+        version: 2.2.0(chart.js@4.6.1)
       cli-table3:
         specifier: ^0.6.5
         version: 0.6.5
@@ -256,7 +256,7 @@ importers:
         version: 3.5.41(typescript@5.9.3)
       vue-chartjs:
         specifier: ^5.3.4
-        version: 5.3.4(chart.js@4.5.1)(vue@3.5.41(typescript@5.9.3))
+        version: 5.3.4(chart.js@4.6.1)(vue@3.5.41(typescript@5.9.3))
       vue-email:
         specifier: ^0.8.11
         version: 0.8.11(supports-color@10.2.2)(tsx@4.21.0)(typescript@5.9.3)(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)
@@ -5826,8 +5826,8 @@ packages:
   chardet@2.1.1:
     resolution: {integrity: sha512-PsezH1rqdV9VvyNhxxOW32/d75r01NY7TQCmOqomRo15ZSOKbpTFVsfjghxo6JloQUCGnH4k1LGu0R4yCLlWQQ==}
 
-  chart.js@4.5.1:
-    resolution: {integrity: sha512-GIjfiT9dbmHRiYi6Nl2yFCq7kkwdkp1W/lp2J99rX0yo9tgJGn3lKQATztIjb5tVtevcBtIdICNWqlq5+E8/Pw==}
+  chart.js@4.6.1:
+    resolution: {integrity: sha512-hJyniucsFmq//EvXYvJ6c6mahPoI3kaxdjVH8awTaJ/fDNWeSqqqArixMJWkWNN6fcYvPU3HneSANFNYtRi61g==}
     engines: {pnpm: '>=8'}
 
   chartjs-adapter-date-fns@3.0.0:
@@ -18499,27 +18499,27 @@ snapshots:
 
   chardet@2.1.1: {}
 
-  chart.js@4.5.1:
+  chart.js@4.6.1:
     dependencies:
       '@kurkle/color': 0.3.4
 
-  chartjs-adapter-date-fns@3.0.0(chart.js@4.5.1)(date-fns@4.4.0):
+  chartjs-adapter-date-fns@3.0.0(chart.js@4.6.1)(date-fns@4.4.0):
     dependencies:
-      chart.js: 4.5.1
+      chart.js: 4.6.1
       date-fns: 4.4.0
 
-  chartjs-plugin-annotation@3.1.0(chart.js@4.5.1):
+  chartjs-plugin-annotation@3.1.0(chart.js@4.6.1):
     dependencies:
-      chart.js: 4.5.1
+      chart.js: 4.6.1
 
-  chartjs-plugin-datalabels@2.2.0(chart.js@4.5.1):
+  chartjs-plugin-datalabels@2.2.0(chart.js@4.6.1):
     dependencies:
-      chart.js: 4.5.1
+      chart.js: 4.6.1
 
-  chartjs-plugin-zoom@2.2.0(chart.js@4.5.1):
+  chartjs-plugin-zoom@2.2.0(chart.js@4.6.1):
     dependencies:
       '@types/hammerjs': 2.0.46
-      chart.js: 4.5.1
+      chart.js: 4.6.1
       hammerjs: 2.0.8
 
   chokidar@3.6.0:
@@ -25516,9 +25516,9 @@ snapshots:
     dependencies:
       ufo: 1.6.4
 
-  vue-chartjs@5.3.4(chart.js@4.5.1)(vue@3.5.41(typescript@5.9.3)):
+  vue-chartjs@5.3.4(chart.js@4.6.1)(vue@3.5.41(typescript@5.9.3)):
     dependencies:
-      chart.js: 4.5.1
+      chart.js: 4.6.1
       vue: 3.5.41(typescript@5.9.3)
 
   vue-component-meta@1.8.27(typescript@5.9.3):
