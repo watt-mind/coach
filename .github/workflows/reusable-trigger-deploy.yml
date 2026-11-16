@@ -45,10 +45,10 @@ on:
 jobs:
   deploy:
     name: Deploy Trigger.dev Tasks
-    # Pin to the `shadow` build pool, same reasoning as deploy.yml (CW-608): the
-    # generic `[self-hosted, Linux]` also matches the `watt-mind-lab-smoke-*`
-    # pool, which is sized for curl/smoke checks and starves under a real build.
-    runs-on: [self-hosted, linux-vm]
+    # GitHub-hosted (CW-1035). This workflow is currently disabled (no caller);
+    # if it is ever re-enabled with a self-hosted TRIGGER_API_URL, that endpoint
+    # must be reachable from GitHub's network or this job moves back on-prem.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ inputs.environment }}
     # Job-level (not workflow-level) so the group stays distinct from the caller's

@@ -7,7 +7,7 @@ on:
 jobs:
   close-linear-issue:
     if: github.event.pull_request.merged == true
-    runs-on: [self-hosted, linux-container]
+    runs-on: ubuntu-latest
     steps:
       - name: Extract Linear Issue Key & Mark Done
         env:
