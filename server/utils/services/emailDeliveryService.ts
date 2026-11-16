@@ -156,6 +156,39 @@ export const EmailDeliveryService = {
     }
 
     try {
+      // Reload consent after acquiring the same lock used for provider sends.
+      // The stored destination may differ from the user's current email.
+      if (delivery.audience !== 'TRANSACTIONAL') {
+        const user = await prisma.user.findUnique({
+          where: delivery.userId ? { id: delivery.userId } : { email: delivery.toEmail },
+          include: { emailPreferences: true }
+        })
+        const preference = user?.emailPreferences.find((p) => p.channel === 'EMAIL')
+        const template = getEmailTemplateDefinition(delivery.templateKey)
+        const suppression = await prisma.emailSuppression.findFirst({
+          where: { email: delivery.toEmail, active: true }
+        })
+        const reason =
+          user && user.emailStatus !== 'VALID'
+            ? 'Recipient email status is not valid'
+            : preference?.globalUnsubscribe
+              ? 'Recipient globally unsubscribed'
+              : template?.preferenceKey &&
+                  preference &&
+                  !(preference as any)[template.preferenceKey]
+                ? 'Recipient disabled this email preference'
+                : suppression
+                  ? 'Destination email is suppressed'
+                  : null
+
+        if (reason) {
+          return await prisma.emailDelivery.update({
+            where: { id: deliveryId },
+            data: { status: 'SUPPRESSED', errorMessage: reason }
+          })
+        }
+      }
+
       const from =
         delivery.fromEmail || process.env.MAIL_FROM_ADDRESS || 'Coach Watts <onboarding@resend.dev>'
 
@@ -445,7 +478,7 @@ export const EmailDeliveryService = {
 
     try {
       const sent = await EmailDeliveryService.dispatch(delivery.id)
-      return { success: true, deliveryId: sent.id, status: 'SENT' }
+      return { success: true, deliveryId: sent.id, status: sent.status }
     } catch (dispatchError: any) {
       const retryable = dispatchError instanceof EmailDispatchError ? dispatchError.retryable : true
 

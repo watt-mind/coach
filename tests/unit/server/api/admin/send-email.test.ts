@@ -17,6 +17,8 @@ vi.stubGlobal('createError', (err: any) => {
 // Mock prisma
 vi.mock('../../../../../server/utils/db', () => ({
   prisma: {
+    user: { findUnique: vi.fn() },
+    emailSuppression: { findFirst: vi.fn() },
     emailDelivery: {
       findUnique: vi.fn(),
       update: vi.fn(),
@@ -94,6 +96,37 @@ describe('Admin Send Email API', () => {
         data: expect.objectContaining({ status: 'SENT' })
       })
     )
+  })
+
+  it('suppresses Send Now after a queued recipient unsubscribes', async () => {
+    const handler = await getHandler()
+    vi.mocked(getServerSession).mockResolvedValue({ user: { isAdmin: true } } as any)
+    vi.mocked(prisma.emailDelivery.findUnique).mockResolvedValue({
+      id: 'del-1',
+      status: 'QUEUED',
+      userId: 'user-1',
+      audience: 'ENGAGEMENT',
+      templateKey: 'WorkoutAnalysisReady',
+      toEmail: 'test@example.com',
+      htmlBody: '<html></html>'
+    } as any)
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      emailStatus: 'VALID',
+      emailPreferences: [{ channel: 'EMAIL', globalUnsubscribe: true }]
+    } as any)
+    vi.mocked(prisma.emailDelivery.updateMany).mockResolvedValue({ count: 1 })
+    vi.mocked(prisma.emailDelivery.update).mockImplementation(
+      async ({ data }: any) =>
+        ({
+          id: 'del-1',
+          ...data
+        }) as any
+    )
+    // @ts-expect-error: mocking internal h3 event
+    const result = await handler({ context: { params: { id: 'del-1' } } })
+    expect(result.success).toBe(false)
+    expect(result.data.status).toBe('SUPPRESSED')
+    expect(getResend()!.emails.send).not.toHaveBeenCalled()
   })
 
   it('should throw error if email is already sent', async () => {
