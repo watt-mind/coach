@@ -209,9 +209,19 @@ Without pulling, the deleted keys remain in local JSON files. The next `pnpm i18
 
 ## 9. Development In-Context Editor
 
-1. Set `TOLGEE_API_URL` and `TOLGEE_API_KEY` in `.env`.
+The in-context editor only works in local development (`nuxt dev`). It stays disabled unless all three settings below are present, and the credentials never ship to production:
+
+1. Set the following in your local `.env` (see `.env.example`):
+   ```bash
+   TOLGEE_API_ENABLED=true
+   TOLGEE_API_URL=https://app.tolgee.io
+   TOLGEE_API_KEY=<your-personal-key>
+   ```
+   `TOLGEE_API_ENABLED=true` is the master switch — without it, `nuxt.config.ts` exposes no Tolgee credentials to the browser and `app/plugins/tolgee.ts` skips the DevTools, so `Alt + Click` does nothing. The translation sync CLI (`cw:cli translations sync-all`) likewise refuses live-API calls without it.
 2. In development, `Alt + Click` (or `Option + Click`) on any translated string to open the Tolgee dialog.
 3. Changes made in the Tolgee UI can be pulled back with `pnpm i18n:pull`.
+
+> **Dev-only by design (CW-610).** `nuxt.config.ts` declares the public `tolgee` runtime config only under `$development`, and only when `TOLGEE_API_ENABLED=true`. A production build (`nuxt build`) therefore carries no Tolgee API key — setting the flag on a deployed stack is inert instead of leaking the key. Never commit a real `TOLGEE_API_KEY`; keep it in your local `.env`.
 
 ## 10. Best Practices
 
