@@ -108,8 +108,8 @@ importers:
         specifier: ^7.1.1
         version: 7.1.1(vue@3.5.41(typescript@5.9.3))
       '@tolgee/web':
-        specifier: ^7.1.2
-        version: 7.1.2
+        specifier: ^7.3.0
+        version: 7.3.0
       '@trigger.dev/core':
         specifier: 4.5.4
         version: 4.5.4(supports-color@10.2.2)
@@ -4418,8 +4418,8 @@ packages:
   '@tolgee/core@7.1.1':
     resolution: {integrity: sha512-RsrFJwFUyeI29BnLVNMSLDyPaAUWZGrF/LU1QUTZ13BACV+cW8wuqD/WwaDhlv3az+AFiCXVbhCi+cmlJUuc5g==}
 
-  '@tolgee/core@7.1.2':
-    resolution: {integrity: sha512-JqcUyalAXbXEr79IaGBacaRuARKY6QCe9MpQWNPJ2Gmdr7DILllr3Yg9PUsHvAXzBIFPGIhxUwYrZwqJoTkWJg==}
+  '@tolgee/core@7.3.0':
+    resolution: {integrity: sha512-/oFCQTXn2UFMINxGWIYbrXD/tCZECJd8qqZL0T6m6nFwrbpcjzGuY3Fyb3yKosWI/7167zfMWcJ5EqcBUbc3Jg==}
 
   '@tolgee/format-icu@7.1.1':
     resolution: {integrity: sha512-BkkvEabz5zv3KPqBcTqk4lYxaYtiC2wJXk8SBqzYUu/9112ECv9ZgXoob/vh0Fd63IJIdtTQ83/oBfVCHv/43A==}
@@ -4432,8 +4432,8 @@ packages:
   '@tolgee/web@7.1.1':
     resolution: {integrity: sha512-ymMgbAIASrYJD1EGxj8Vt7NMltqVALEE2vqmXfsffrBvBfkloaNZ5fMMvDykoMLHThq9xgZFPWLrjLdIr9Z80A==}
 
-  '@tolgee/web@7.1.2':
-    resolution: {integrity: sha512-iMW/0u0YBfFlOJjizf2rWnD8OqvozaJTJLwLwcXqojoC2NTbV4djZt/6dL8RP+1EemWXAWtZTYvJFvLyqBwBow==}
+  '@tolgee/web@7.3.0':
+    resolution: {integrity: sha512-mHrMKZEf1l0jt7QVMdUEKYv4xDhcKz97CO6jUWwjHlMSA3ELInR+LZ5QKlTzr8gqlRM9CZ4y3IXIWkPwB0aXag==}
 
   '@tootallnate/once@2.0.0':
     resolution: {integrity: sha512-XCuKFP5PS55gnMVu3dty8KPatLqUoy/ZYzDzAGCQ8JNFCkLXzmI7vNHCR+XpbZaMWQK/vQubr7PkYq8g470J/A==}
@@ -16833,7 +16833,7 @@ snapshots:
 
   '@tolgee/core@7.1.1': {}
 
-  '@tolgee/core@7.1.2': {}
+  '@tolgee/core@7.3.0': {}
 
   '@tolgee/format-icu@7.1.1': {}
 
@@ -16846,9 +16846,9 @@ snapshots:
     dependencies:
       '@tolgee/core': 7.1.1
 
-  '@tolgee/web@7.1.2':
+  '@tolgee/web@7.3.0':
     dependencies:
-      '@tolgee/core': 7.1.2
+      '@tolgee/core': 7.3.0
 
   '@tootallnate/once@2.0.0': {}
 
